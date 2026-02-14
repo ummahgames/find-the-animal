@@ -21,6 +21,7 @@ const CELL_BREATHING = 0.8;  // Animals use 80% of cell (20% breathing room)
 const HINT_DELAY_MS = 15000;  // "Getting Warmer" - target pulsates after 15s
 const HINT_INTERVAL_MS = 5000;  // Pulsate every 5s until found
 const JITTER = 0.25;  // Max offset as fraction of cell size (±25% = "not fully grid")
+const TARGET_MIN_VISIBLE = 0.8;  // Target must be at least 80% visible (never clipped at edge)
 const SHADOW_BLUR = 5;
 const SHADOW_OFFSET = 3;
 const WOBBLE_DURATION = 400;  // ms
@@ -239,6 +240,19 @@ function computeAABB(cx, cy, w, h, scale, rotationDeg) {
 }
 
 /**
+ * Check if an AABB is at least minFraction visible within the canvas.
+ * Used for target placement so kids can always see most of the animal.
+ */
+function isMostlyVisible(aabb, minFraction = 0.8) {
+  const w = aabb.maxX - aabb.minX;
+  const h = aabb.maxY - aabb.minY;
+  if (w <= 0 || h <= 0) return true;
+  const visibleW = Math.min(aabb.maxX, canvasWidth) - Math.max(aabb.minX, 0);
+  const visibleH = Math.min(aabb.maxY, canvasHeight) - Math.max(aabb.minY, 0);
+  return (visibleW / w >= minFraction) && (visibleH / h >= minFraction);
+}
+
+/**
  * Check if placing a new animal would cause it to fully cover another, or vice versa.
  * "Fully cover" = one animal's center falls inside the other's bounding box.
  */
@@ -332,36 +346,58 @@ function generateLevel() {
   }
 
   // 3. Place TARGET first (so we know where "near" is for camouflage)
+  // Target must be at least 80% visible so kids can find it (never clipped at edge)
   const targetImg = ImageBank.get(targetStyle, targetAnimalName);
-  const targetCellIdx = Math.floor(Math.random() * allCells.length);
-  const targetCell = allCells[targetCellIdx];
-  const decoyCells = [...allCells.slice(0, targetCellIdx), ...allCells.slice(targetCellIdx + 1)];
+  const shuffledCells = [...allCells].sort(() => Math.random() - 0.5);
+  let targetCell = null;
+  let decoyCells = allCells;
 
   if (targetImg) {
     const scaleToFit = (maxCellDimension * CELL_BREATHING) / Math.max(targetImg.width, targetImg.height);
     const scale = scaleToFit * (0.92 + Math.random() * 0.08);
     const rotation = (Math.random() * 2 - 1) * ROTATION_RANGE;
     let placed = false;
-    for (let attempt = 0; attempt < 8 && !placed; attempt++) {
-      const jitterX = (Math.random() * 2 - 1) * cellW * JITTER;
-      const jitterY = (Math.random() * 2 - 1) * cellH * JITTER;
-      const x = targetCell.cx + jitterX;
-      const y = targetCell.cy + jitterY;
-      const aabb = computeAABB(x, y, targetImg.width, targetImg.height, scale, rotation);
-      const overlaps = placedAnimals.some(ex => wouldFullyOverlap(aabb, x, y, ex));
-      if (!overlaps) {
-        const targetObj = { img: targetImg, x, y, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true, wobbleStart: 0 };
-        placedAnimals.push(targetObj);
-        targetAnimal = targetObj;
-        placed = true;
+    for (const cell of shuffledCells) {
+      if (placed) break;
+      for (let attempt = 0; attempt < 12 && !placed; attempt++) {
+        const jitterX = (Math.random() * 2 - 1) * cellW * JITTER;
+        const jitterY = (Math.random() * 2 - 1) * cellH * JITTER;
+        const x = cell.cx + jitterX;
+        const y = cell.cy + jitterY;
+        const aabb = computeAABB(x, y, targetImg.width, targetImg.height, scale, rotation);
+        const overlaps = placedAnimals.some(ex => wouldFullyOverlap(aabb, x, y, ex));
+        const mostlyVisible = isMostlyVisible(aabb, TARGET_MIN_VISIBLE);
+        if (!overlaps && mostlyVisible) {
+          targetCell = cell;
+          const targetObj = { img: targetImg, x, y, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true, wobbleStart: 0 };
+          placedAnimals.push(targetObj);
+          targetAnimal = targetObj;
+          placed = true;
+        }
       }
     }
     if (!placed) {
+      // Fallback: use first cell where center placement is at least 80% visible
+      for (const cell of shuffledCells) {
+        const aabb = computeAABB(cell.cx, cell.cy, targetImg.width, targetImg.height, scale, rotation);
+        if (isMostlyVisible(aabb, TARGET_MIN_VISIBLE)) {
+          targetCell = cell;
+          const targetObj = { img: targetImg, x: cell.cx, y: cell.cy, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true, wobbleStart: 0 };
+          placedAnimals.push(targetObj);
+          targetAnimal = targetObj;
+          placed = true;
+          break;
+        }
+      }
+    }
+    if (!placed) {
+      targetCell = shuffledCells[0];
       const aabb = computeAABB(targetCell.cx, targetCell.cy, targetImg.width, targetImg.height, scale, rotation);
       const targetObj = { img: targetImg, x: targetCell.cx, y: targetCell.cy, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true, wobbleStart: 0 };
       placedAnimals.push(targetObj);
       targetAnimal = targetObj;
     }
+    decoyCells = allCells.filter(c => c !== targetCell);
   }
 
   // 4. Shuffle decoy cells and place decoys (with camouflage near target at higher levels)
@@ -372,7 +408,7 @@ function generateLevel() {
 
   for (let i = 0; i < decoyCount; i++) {
     const cell = decoyCells[i];
-    const isNearTarget = useCamouflage &&
+    const isNearTarget = useCamouflage && targetCell &&
       Math.abs(cell.row - targetCell.row) <= 1 &&
       Math.abs(cell.col - targetCell.col) <= 1;
 
