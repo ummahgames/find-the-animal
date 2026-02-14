@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Find the Animal</title>
+  <style>
+    /* ===== CSS: Soft pastel gradient background & responsive layout ===== */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      min-height: 100vh;
+      overflow: hidden;
+      /* Soft pastel gradient background */
+      background: linear-gradient(135deg, #e8f4f8 0%, #f5e6f0 50%, #f0f4e8 100%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 10px;
+    }
+
+    /* Header: Target animal name + preview icon */
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 12px 20px;
+      margin-bottom: 10px;
+      background: rgba(255, 255, 255, 0.7);
+      border-radius: 12px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.08);
+      flex-shrink: 0;
+    }
+
+    .level-badge {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .header h1 {
+      font-size: clamp(1rem, 3vw, 1.5rem);
+      color: #4a5568;
+      font-weight: 600;
+    }
+
+    .target-preview {
+      width: 48px;
+      height: 48px;
+      object-fit: contain;
+      border-radius: 8px;
+      border: 2px solid #a0aec0;
+    }
+
+    /* Canvas container - responsive, fills available space */
+    .game-container {
+      flex: 1;
+      width: 100%;
+      max-width: 100%;
+      max-height: calc(100vh - 120px);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+    }
+
+    #gameCanvas {
+      display: block;
+      max-width: 100%;
+      max-height: 100%;
+      cursor: pointer;
+      touch-action: none; /* Prevents scrolling when touching canvas on mobile */
+    }
+
+    /* Win overlay - celebration modal */
+    .win-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      z-index: 1000;
+      animation: fadeIn 0.3s ease;
+    }
+
+    .win-overlay.visible {
+      display: flex;
+    }
+
+    #confettiCanvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+
+    .win-content {
+      position: relative;
+      z-index: 2;
+      background: white;
+      padding: 32px;
+      border-radius: 16px;
+      text-align: center;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+      animation: popIn 0.4s ease;
+    }
+
+    @keyframes popIn {
+      from {
+        transform: scale(0.8);
+        opacity: 0;
+      }
+      to {
+        transform: scale(1);
+        opacity: 1;
+      }
+    }
+
+    .win-content h2 {
+      font-size: 2rem;
+      color: #2d3748;
+      margin-bottom: 16px;
+    }
+
+    .play-again-btn {
+      margin-top: 20px;
+      padding: 12px 28px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: white;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .play-again-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+    }
+
+    .play-again-btn:active {
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="level-badge" id="levelBadge">Level 1</span>
+    <h1 id="targetText">Find the Round Penguin!</h1>
+    <img id="targetPreview" class="target-preview" src="" alt="Target animal">
+  </div>
+
+  <div class="game-container">
+    <canvas id="gameCanvas"></canvas>
+  </div>
+
+  <!-- Win overlay with confetti area -->
+  <div class="win-overlay" id="winOverlay">
+    <canvas id="confettiCanvas"></canvas>
+    <div class="win-content">
+      <h2>Found it!</h2>
+      <p id="winMessage">Congratulations! You found the animal.</p>
+      <button class="play-again-btn" id="playAgainBtn">Next Level</button>
+    </div>
+  </div>
+
+  <script>
+    /* ===== GAME CONFIGURATION ===== */
+    const ANIMALS = ['elephant', 'giraffe', 'hippo', 'monkey', 'panda', 'parrot', 'penguin', 'pig', 'rabbit', 'snake'];
+    const STYLES = ['round', 'square'];
+    /* Level-based difficulty: base values + per-level scaling */
+    const DECOY_BASE = 15;
+    const DECOY_PER_LEVEL = 4;
+    const SCALE_BASE_MIN = 0.5;
+    const SCALE_BASE_MAX = 0.75;
+    const SCALE_REDUCE_PER_LEVEL = 0.025;
+    const SCALE_FLOOR = 0.28;
+    const CAMOUFLAGE_LEVEL = 2;  // Camouflage kicks in at this level
+    const CAMOUFLAGE_BIAS = 0.75;  // 75% chance same-color when in "near target" zone
+    /* Color groups for camouflage (animals that look similar / same color family) */
+    const COLOR_GROUPS = {
+      blue: ['penguin', 'hippo'],
+      dark: ['panda'],
+      brown: ['elephant', 'giraffe', 'monkey'],
+      grey: ['rabbit'],
+      green: ['snake'],
+      pink: ['pig'],
+      colorful: ['parrot']
+    };
+    const ROTATION_RANGE = 15; // degrees
+    const GRID_COLS_BASE = 6;
+    const GRID_ROWS_BASE = 5;
+    const GRID_EXPAND_PER_LEVELS = 5;  // Add 1 col/row every N levels
+    const JITTER = 0.25;  // Max offset as fraction of cell size (±25% = "not fully grid")
+    const SHADOW_BLUR = 5;
+    const SHADOW_OFFSET = 3;
+
+    /* ===== IMAGE BANK: Preloads all animal images before game starts ===== */
+    const ImageBank = {
+      images: {},
+      loaded: 0,
+      total: 0,
+
+      /**
+       * Preload all animal images from round and square folders.
+       * Returns a Promise that resolves when all images are loaded.
+       */
+      loadAll() {
+        const promises = [];
+        STYLES.forEach(style => {
+          ANIMALS.forEach(animal => {
+            const key = `${style}_${animal}`;
+            const path = `./assets/${style}/${animal}.png`;
+            this.total++;
+            const promise = new Promise((resolve, reject) => {
+              const img = new Image();
+              img.onload = () => {
+                this.images[key] = img;
+                this.loaded++;
+                resolve();
+              };
+              img.onerror = () => {
+                console.warn(`Failed to load: ${path}`);
+                this.loaded++;
+                resolve(); // Continue even if one fails
+              };
+              img.src = path;
+            });
+            promises.push(promise);
+          });
+        });
+        return Promise.all(promises);
+      },
+
+      get(style, animal) {
+        return this.images[`${style}_${animal}`];
+      }
+    };
+
+    /* ===== GAME STATE ===== */
+    let canvas, ctx, confettiCtx;
+    let canvasWidth, canvasHeight;
+    let placedAnimals = [];
+    let targetAnimal = null;
+    let targetInfo = null;
+    let gameWon = false;
+    let confettiParticles = [];
+    let level = 1;
+
+    function getColorGroup(animal) {
+      for (const [group, animals] of Object.entries(COLOR_GROUPS)) {
+        if (animals.includes(animal)) return group;
+      }
+      return 'colorful';
+    }
+
+    function getSameColorAnimals(targetAnimalName) {
+      const group = getColorGroup(targetAnimalName);
+      return COLOR_GROUPS[group].filter(a => a !== targetAnimalName);
+    }
+
+    /* ===== CANVAS SETUP & RESPONSIVENESS ===== */
+    function initCanvas() {
+      canvas = document.getElementById('gameCanvas');
+      ctx = canvas.getContext('2d');
+      const container = document.querySelector('.game-container');
+
+      function resizeCanvas() {
+        const rect = container.getBoundingClientRect();
+        canvasWidth = rect.width;
+        canvasHeight = rect.height;
+        canvas.width = canvasWidth;
+        canvas.height = canvasHeight;
+        if (placedAnimals.length > 0) {
+          generateLevel(); // Regenerate to fit new size
+        }
+      }
+
+      resizeCanvas();
+      window.addEventListener('resize', resizeCanvas);
+    }
+
+    /**
+     * Compute AABB (Axis-Aligned Bounding Box) for a rotated, scaled rectangle.
+     * @param {number} cx - Center x
+     * @param {number} cy - Center y
+     * @param {number} w - Image width
+     * @param {number} h - Image height
+     * @param {number} scale - Scale factor
+     * @param {number} rotationDeg - Rotation in degrees
+     * @returns {{ minX, minY, maxX, maxY }}
+     */
+    function computeAABB(cx, cy, w, h, scale, rotationDeg) {
+      const rad = (rotationDeg * Math.PI) / 180;
+      const cos = Math.cos(rad);
+      const sin = Math.sin(rad);
+      const hw = (w * scale) / 2;
+      const hh = (h * scale) / 2;
+      const corners = [
+        { x: -hw * cos + hh * sin, y: -hw * sin - hh * cos },
+        { x:  hw * cos + hh * sin, y:  hw * sin - hh * cos },
+        { x:  hw * cos - hh * sin, y:  hw * sin + hh * cos },
+        { x: -hw * cos - hh * sin, y: -hw * sin + hh * cos }
+      ];
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      corners.forEach(c => {
+        const x = cx + c.x, y = cy + c.y;
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+      });
+      return { minX, minY, maxX, maxY };
+    }
+
+    /**
+     * Check if placing a new animal would cause it to fully cover another, or vice versa.
+     * "Fully cover" = one animal's center falls inside the other's bounding box.
+     */
+    function wouldFullyOverlap(newAabb, newX, newY, existing) {
+      const existingCenterInNew = existing.x >= newAabb.minX && existing.x <= newAabb.maxX && existing.y >= newAabb.minY && existing.y <= newAabb.maxY;
+      const newCenterInExisting = newX >= existing.aabb.minX && newX <= existing.aabb.maxX && newY >= existing.aabb.minY && newY <= existing.aabb.maxY;
+      return existingCenterInNew || newCenterInExisting;
+    }
+
+    /**
+     * generateLevel() - Grid-like placement with level-based difficulty.
+     * Quantity, scale, and camouflage all scale with level.
+     */
+    function generateLevel() {
+      placedAnimals = [];
+      gameWon = false;
+
+      // Level-based difficulty scaling (grid expands to fit more decoys)
+      const gridCols = GRID_COLS_BASE + Math.floor((level - 1) / GRID_EXPAND_PER_LEVELS);
+      const gridRows = GRID_ROWS_BASE + Math.floor((level - 1) / GRID_EXPAND_PER_LEVELS);
+      const maxCells = gridCols * gridRows - 1;
+      const decoyCount = Math.min(
+        DECOY_BASE + (level - 1) * DECOY_PER_LEVEL + Math.floor(Math.random() * 4),
+        maxCells
+      );
+      const scaleReduce = Math.min((level - 1) * SCALE_REDUCE_PER_LEVEL, 0.4);
+      const scaleMin = Math.max(SCALE_BASE_MIN - scaleReduce, SCALE_FLOOR);
+      const scaleMax = Math.max(SCALE_BASE_MAX - scaleReduce, SCALE_FLOOR);
+      const useCamouflage = level >= CAMOUFLAGE_LEVEL;
+
+      // 1. Pick target
+      const targetAnimalName = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
+      const targetStyle = STYLES[Math.floor(Math.random() * STYLES.length)];
+      const styleLabel = targetStyle.charAt(0).toUpperCase() + targetStyle.slice(1);
+      targetInfo = {
+        style: targetStyle,
+        animal: targetAnimalName,
+        displayName: `${styleLabel} ${targetAnimalName.charAt(0).toUpperCase() + targetAnimalName.slice(1)}`
+      };
+
+      document.getElementById('levelBadge').textContent = `Level ${level}`;
+      document.getElementById('targetText').textContent = `Find the ${targetInfo.displayName}!`;
+      const previewImg = ImageBank.get(targetStyle, targetAnimalName);
+      const previewEl = document.getElementById('targetPreview');
+      if (previewImg) previewEl.src = previewImg.src;
+      previewEl.style.display = previewImg ? 'block' : 'none';
+
+      const sameColorDecoys = getSameColorAnimals(targetAnimalName);
+
+      // 2. Build grid with row/col for "near target" detection
+      const cellW = canvasWidth / gridCols;
+      const cellH = canvasHeight / gridRows;
+      const allCells = [];
+      for (let row = 0; row < gridRows; row++) {
+        for (let col = 0; col < gridCols; col++) {
+          allCells.push({
+            cx: (col + 0.5) * cellW,
+            cy: (row + 0.5) * cellH,
+            row,
+            col
+          });
+        }
+      }
+
+      // 3. Place TARGET first (so we know where "near" is for camouflage)
+      const targetImg = ImageBank.get(targetStyle, targetAnimalName);
+      const targetCellIdx = Math.floor(Math.random() * allCells.length);
+      const targetCell = allCells[targetCellIdx];
+      const decoyCells = [...allCells.slice(0, targetCellIdx), ...allCells.slice(targetCellIdx + 1)];
+
+      if (targetImg) {
+        const scale = scaleMin + Math.random() * (scaleMax - scaleMin);
+        const rotation = (Math.random() * 2 - 1) * ROTATION_RANGE;
+        let placed = false;
+        for (let attempt = 0; attempt < 8 && !placed; attempt++) {
+          const jitterX = (Math.random() * 2 - 1) * cellW * JITTER;
+          const jitterY = (Math.random() * 2 - 1) * cellH * JITTER;
+          const x = targetCell.cx + jitterX;
+          const y = targetCell.cy + jitterY;
+          const aabb = computeAABB(x, y, targetImg.width, targetImg.height, scale, rotation);
+          const overlaps = placedAnimals.some(ex => wouldFullyOverlap(aabb, x, y, ex));
+          if (!overlaps) {
+            const targetObj = { img: targetImg, x, y, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true };
+            placedAnimals.push(targetObj);
+            targetAnimal = targetObj;
+            placed = true;
+          }
+        }
+        if (!placed) {
+          const aabb = computeAABB(targetCell.cx, targetCell.cy, targetImg.width, targetImg.height, scale, rotation);
+          const targetObj = { img: targetImg, x: targetCell.cx, y: targetCell.cy, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true };
+          placedAnimals.push(targetObj);
+          targetAnimal = targetObj;
+        }
+      }
+
+      // 4. Shuffle decoy cells and place decoys (with camouflage near target at higher levels)
+      for (let i = decoyCells.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [decoyCells[i], decoyCells[j]] = [decoyCells[j], decoyCells[i]];
+      }
+
+      for (let i = 0; i < decoyCount; i++) {
+        const cell = decoyCells[i];
+        const isNearTarget = useCamouflage &&
+          Math.abs(cell.row - targetCell.row) <= 1 &&
+          Math.abs(cell.col - targetCell.col) <= 1;
+
+        let style, animal;
+        if (isNearTarget && sameColorDecoys.length > 0 && Math.random() < CAMOUFLAGE_BIAS) {
+          animal = sameColorDecoys[Math.floor(Math.random() * sameColorDecoys.length)];
+          style = STYLES[Math.floor(Math.random() * STYLES.length)];
+        } else {
+          do {
+            style = STYLES[Math.floor(Math.random() * STYLES.length)];
+            animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
+          } while (style === targetStyle && animal === targetAnimalName);
+        }
+
+        const img = ImageBank.get(style, animal);
+        if (!img) continue;
+
+        const scale = scaleMin + Math.random() * (scaleMax - scaleMin);
+        const rotation = (Math.random() * 2 - 1) * ROTATION_RANGE;
+
+        let placed = false;
+        for (let attempt = 0; attempt < 8 && !placed; attempt++) {
+          const jitterX = (Math.random() * 2 - 1) * cellW * JITTER;
+          const jitterY = (Math.random() * 2 - 1) * cellH * JITTER;
+          const x = cell.cx + jitterX;
+          const y = cell.cy + jitterY;
+          const aabb = computeAABB(x, y, img.width, img.height, scale, rotation);
+          const overlaps = placedAnimals.some(ex => wouldFullyOverlap(aabb, x, y, ex));
+          if (!overlaps) {
+            placedAnimals.push({ img, x, y, scale, rotation, style, animal, aabb });
+            placed = true;
+          }
+        }
+        if (!placed) {
+          const aabb = computeAABB(cell.cx, cell.cy, img.width, img.height, scale, rotation);
+          placedAnimals.push({ img, x: cell.cx, y: cell.cy, scale, rotation, style, animal, aabb });
+        }
+      }
+
+      render();
+    }
+
+    /**
+     * Render the scene: draw all animals with sticker effect (shadow), then atmospheric overlay.
+     */
+    function render() {
+      if (!ctx || !canvasWidth || !canvasHeight) return;
+
+      ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+      placedAnimals.forEach(entry => {
+        const { img, x, y, scale, rotation } = entry;
+        if (!img) return;
+
+        ctx.save();
+
+        // Sticker effect: drop shadow (blur: 5, offset: 3)
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
+        ctx.shadowBlur = SHADOW_BLUR;
+        ctx.shadowOffsetX = SHADOW_OFFSET;
+        ctx.shadowOffsetY = SHADOW_OFFSET;
+
+        ctx.translate(x, y);
+        ctx.rotate((rotation * Math.PI) / 180);
+        ctx.scale(scale, scale);
+        ctx.drawImage(img, -img.width / 2, -img.height / 2, img.width, img.height);
+
+        ctx.restore();
+      });
+
+      // Atmospheric overlay: semi-transparent tint to unify colors
+      ctx.fillStyle = 'rgba(255, 250, 200, 0.12)'; // Slight warm yellow
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    }
+
+    /**
+     * checkClick(x, y) - AABB collision detection.
+     * Checks if the click/touch coordinates fall within the target animal's bounding box.
+     * @param {number} x - Click x (relative to canvas)
+     * @param {number} y - Click y (relative to canvas)
+     * @returns {boolean} - True if target was hit
+     */
+    function checkClick(x, y) {
+      if (gameWon || !targetAnimal) return false;
+
+      const { aabb } = targetAnimal;
+      const hit = x >= aabb.minX && x <= aabb.maxX && y >= aabb.minY && y <= aabb.maxY;
+
+      if (hit) {
+        gameWon = true;
+        showWinOverlay();
+      }
+      return hit;
+    }
+
+    /* Get canvas-relative coordinates from mouse or touch event */
+    function getCanvasCoords(e) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+
+      let clientX, clientY;
+      if (e.touches) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+      } else {
+        clientX = e.clientX;
+        clientY = e.clientY;
+      }
+
+      return {
+        x: (clientX - rect.left) * scaleX,
+        y: (clientY - rect.top) * scaleY
+      };
+    }
+
+    function handlePointerDown(e) {
+      e.preventDefault(); // Prevent scrolling/zooming when touching canvas on mobile
+      const coords = getCanvasCoords(e);
+      checkClick(coords.x, coords.y);
+    }
+
+    /* ===== WIN OVERLAY & CONFETTI ===== */
+    function showWinOverlay() {
+      const overlay = document.getElementById('winOverlay');
+      overlay.classList.add('visible');
+      launchConfetti();
+    }
+
+    function hideWinOverlay() {
+      document.getElementById('winOverlay').classList.remove('visible');
+    }
+
+    function launchConfetti() {
+      const confettiCanvas = document.getElementById('confettiCanvas');
+      confettiCanvas.width = window.innerWidth;
+      confettiCanvas.height = window.innerHeight;
+      confettiCtx = confettiCanvas.getContext('2d');
+
+      const colors = ['#ff6b6b', '#4ecdc4', '#ffe66d', '#95e1d3', '#f38181', '#aa96da'];
+      confettiParticles = [];
+      for (let i = 0; i < 80; i++) {
+        confettiParticles.push({
+          x: Math.random() * confettiCanvas.width,
+          y: Math.random() * confettiCanvas.height,
+          vx: (Math.random() - 0.5) * 8,
+          vy: (Math.random() - 0.5) * 8 - 2,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          size: Math.random() * 6 + 3,
+          rotation: Math.random() * 360,
+          rotationSpeed: (Math.random() - 0.5) * 10
+        });
+      }
+      animateConfetti();
+    }
+
+    function animateConfetti() {
+      if (!confettiCtx) return;
+      confettiCtx.clearRect(0, 0, confettiCtx.canvas.width, confettiCtx.canvas.height);
+
+      let active = 0;
+      confettiParticles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.15;
+        p.rotation += p.rotationSpeed;
+
+        confettiCtx.save();
+        confettiCtx.translate(p.x, p.y);
+        confettiCtx.rotate((p.rotation * Math.PI) / 180);
+        confettiCtx.fillStyle = p.color;
+        confettiCtx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
+        confettiCtx.restore();
+
+        if (p.y < confettiCtx.canvas.height + 20) active++;
+      });
+
+      if (active > 0) {
+        requestAnimationFrame(animateConfetti);
+      }
+    }
+
+    /* ===== PLAY AGAIN ===== */
+    document.getElementById('playAgainBtn').addEventListener('click', () => {
+      hideWinOverlay();
+      level++;
+      generateLevel();
+    });
+
+    /* ===== INIT: Preload images, then start game ===== */
+    ImageBank.loadAll().then(() => {
+      initCanvas();
+      generateLevel();
+
+      // Attach input handlers after canvas is ready
+      const gameCanvas = document.getElementById('gameCanvas');
+      gameCanvas.addEventListener('click', (e) => {
+        const coords = getCanvasCoords(e);
+        checkClick(coords.x, coords.y);
+      });
+      gameCanvas.addEventListener('touchstart', handlePointerDown, { passive: false });
+    });
+  </script>
+</body>
+</html>
