@@ -80,7 +80,9 @@
       max-width: 100%;
       max-height: 100%;
       cursor: pointer;
-      touch-action: none; /* Prevents scrolling when touching canvas on mobile */
+      touch-action: none;
+      -webkit-tap-highlight-color: transparent;
+      user-select: none;
     }
 
     /* Win overlay - celebration modal */
@@ -167,6 +169,26 @@
     .play-again-btn:active {
       transform: translateY(0);
     }
+
+    /* Responsive: smaller screens (phones) */
+    @media (max-width: 480px) {
+      body { padding: 6px; }
+      .header {
+        flex-wrap: wrap;
+        gap: 8px;
+        padding: 8px 12px;
+        margin-bottom: 6px;
+      }
+      .header h1 { font-size: 0.95rem; }
+      .target-preview { width: 36px; height: 36px; }
+      .game-container { max-height: calc(100vh - 100px); }
+    }
+
+    @media (max-height: 500px) {
+      .header { padding: 6px 10px; margin-bottom: 4px; }
+      .target-preview { width: 32px; height: 32px; }
+      .game-container { max-height: calc(100vh - 80px); }
+    }
   </style>
 </head>
 <body>
@@ -217,9 +239,11 @@
     const GRID_COLS_BASE = 6;
     const GRID_ROWS_BASE = 5;
     const GRID_EXPAND_PER_LEVELS = 5;  // Add 1 col/row every N levels
+    const MIN_CELL_SIZE = 55;  // Minimum px per cell - prevents overcrowding on phones
     const JITTER = 0.25;  // Max offset as fraction of cell size (±25% = "not fully grid")
     const SHADOW_BLUR = 5;
     const SHADOW_OFFSET = 3;
+    const WOBBLE_DURATION = 400;  // ms
 
     /* ===== IMAGE BANK: Preloads all animal images before game starts ===== */
     const ImageBank = {
@@ -272,6 +296,9 @@
     let gameWon = false;
     let confettiParticles = [];
     let level = 1;
+    let scenery = [];
+    let audioCtx = null;
+    let burstParticles = [];  // Particles exploding from target on win
 
     function getColorGroup(animal) {
       for (const [group, animals] of Object.entries(COLOR_GROUPS)) {
@@ -283,6 +310,92 @@
     function getSameColorAnimals(targetAnimalName) {
       const group = getColorGroup(targetAnimalName);
       return COLOR_GROUPS[group].filter(a => a !== targetAnimalName);
+    }
+
+    /**
+     * Generate scenery (grass, clouds, rocks) for "busy world" visual noise.
+     * Called at level start; drawn before animals.
+     */
+    function generateScenery() {
+      scenery = [];
+      const rnd = (min, max) => min + Math.random() * (max - min);
+
+      // Grass tufts - small green arcs in clusters
+      const grassClusters = 8 + Math.floor(Math.random() * 6);
+      for (let c = 0; c < grassClusters; c++) {
+        const cx = rnd(0.1, 0.9) * canvasWidth;
+        const cy = rnd(0.1, 0.9) * canvasHeight;
+        const tufts = 3 + Math.floor(Math.random() * 5);
+        for (let t = 0; t < tufts; t++) {
+          scenery.push({
+            type: 'grass',
+            x: cx + (Math.random() - 0.5) * 60,
+            y: cy + (Math.random() - 0.5) * 60,
+            size: rnd(8, 18),
+            hue: 100 + Math.random() * 40
+          });
+        }
+      }
+
+      // Clouds - soft ellipses
+      const cloudCount = 4 + Math.floor(Math.random() * 4);
+      for (let i = 0; i < cloudCount; i++) {
+        scenery.push({
+          type: 'cloud',
+          x: rnd(0.1, 0.9) * canvasWidth,
+          y: rnd(0.05, 0.4) * canvasHeight,
+          w: rnd(40, 80),
+          h: rnd(20, 40),
+          opacity: rnd(0.15, 0.35)
+        });
+      }
+
+      // Rocks - grey rounded shapes
+      const rockClusters = 5 + Math.floor(Math.random() * 4);
+      for (let c = 0; c < rockClusters; c++) {
+        const cx = rnd(0.1, 0.9) * canvasWidth;
+        const cy = rnd(0.2, 0.9) * canvasHeight;
+        const rocks = 2 + Math.floor(Math.random() * 3);
+        for (let r = 0; r < rocks; r++) {
+          scenery.push({
+            type: 'rock',
+            x: cx + (Math.random() - 0.5) * 50,
+            y: cy + (Math.random() - 0.5) * 50,
+            w: rnd(15, 35),
+            h: rnd(10, 25),
+            grey: 140 + Math.random() * 40
+          });
+        }
+      }
+    }
+
+    /**
+     * Play a short "boop" sound for wrong clicks (synthesized, no external files).
+     */
+    function playBoop() {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.frequency.setValueAtTime(200, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.05);
+      osc.type = 'sine';
+      gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+      osc.start(audioCtx.currentTime);
+      osc.stop(audioCtx.currentTime + 0.15);
+    }
+
+    /**
+     * Play animal-specific sound from ./assets/sounds/{animal}.mp3 if available.
+     * Add CC0 sounds (e.g. from Pixabay, freesound.org) to enable. Falls back to boop.
+     */
+    function playAnimalSound(animal) {
+      const audio = new Audio(`./assets/sounds/${animal}.mp3`);
+      audio.volume = 0.5;
+      audio.onerror = () => playBoop();
+      audio.play().catch(() => playBoop());
     }
 
     /* ===== CANVAS SETUP & RESPONSIVENESS ===== */
@@ -350,21 +463,40 @@
     }
 
     /**
+     * Compute responsive grid size based on screen dimensions.
+     * Ensures cells are never smaller than MIN_CELL_SIZE to avoid overcrowding on phones.
+     */
+    function getResponsiveGridSize() {
+      const maxCols = Math.max(3, Math.floor(canvasWidth / MIN_CELL_SIZE));
+      const maxRows = Math.max(3, Math.floor(canvasHeight / MIN_CELL_SIZE));
+      const levelExpand = Math.floor((level - 1) / GRID_EXPAND_PER_LEVELS);
+      const gridCols = Math.min(
+        GRID_COLS_BASE + levelExpand,
+        maxCols
+      );
+      const gridRows = Math.min(
+        GRID_ROWS_BASE + levelExpand,
+        maxRows
+      );
+      return { gridCols: Math.max(3, gridCols), gridRows: Math.max(3, gridRows) };
+    }
+
+    /**
      * generateLevel() - Grid-like placement with level-based difficulty.
      * Quantity, scale, and camouflage all scale with level.
      */
     function generateLevel() {
       placedAnimals = [];
+      burstParticles = [];
       gameWon = false;
 
-      // Level-based difficulty scaling (grid expands to fit more decoys)
-      const gridCols = GRID_COLS_BASE + Math.floor((level - 1) / GRID_EXPAND_PER_LEVELS);
-      const gridRows = GRID_ROWS_BASE + Math.floor((level - 1) / GRID_EXPAND_PER_LEVELS);
+      // Responsive grid: adapts to screen size, never overcrowds
+      const { gridCols, gridRows } = getResponsiveGridSize();
       const maxCells = gridCols * gridRows - 1;
-      const decoyCount = Math.min(
-        DECOY_BASE + (level - 1) * DECOY_PER_LEVEL + Math.floor(Math.random() * 4),
-        maxCells
-      );
+      const rawDecoys = DECOY_BASE + (level - 1) * DECOY_PER_LEVEL + Math.floor(Math.random() * 4);
+      // On small screens, cap decoys to ~65% of cells so grid stays readable
+      const decoyCap = Math.max(8, Math.floor(maxCells * 0.65));
+      const decoyCount = Math.min(rawDecoys, maxCells, decoyCap);
       const scaleReduce = Math.min((level - 1) * SCALE_REDUCE_PER_LEVEL, 0.4);
       const scaleMin = Math.max(SCALE_BASE_MIN - scaleReduce, SCALE_FLOOR);
       const scaleMax = Math.max(SCALE_BASE_MAX - scaleReduce, SCALE_FLOOR);
@@ -422,7 +554,7 @@
           const aabb = computeAABB(x, y, targetImg.width, targetImg.height, scale, rotation);
           const overlaps = placedAnimals.some(ex => wouldFullyOverlap(aabb, x, y, ex));
           if (!overlaps) {
-            const targetObj = { img: targetImg, x, y, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true };
+            const targetObj = { img: targetImg, x, y, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true, wobbleStart: 0 };
             placedAnimals.push(targetObj);
             targetAnimal = targetObj;
             placed = true;
@@ -430,7 +562,7 @@
         }
         if (!placed) {
           const aabb = computeAABB(targetCell.cx, targetCell.cy, targetImg.width, targetImg.height, scale, rotation);
-          const targetObj = { img: targetImg, x: targetCell.cx, y: targetCell.cy, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true };
+          const targetObj = { img: targetImg, x: targetCell.cx, y: targetCell.cy, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true, wobbleStart: 0 };
           placedAnimals.push(targetObj);
           targetAnimal = targetObj;
         }
@@ -474,95 +606,211 @@
           const aabb = computeAABB(x, y, img.width, img.height, scale, rotation);
           const overlaps = placedAnimals.some(ex => wouldFullyOverlap(aabb, x, y, ex));
           if (!overlaps) {
-            placedAnimals.push({ img, x, y, scale, rotation, style, animal, aabb });
+            placedAnimals.push({ img, x, y, scale, rotation, style, animal, aabb, wobbleStart: 0 });
             placed = true;
           }
         }
         if (!placed) {
           const aabb = computeAABB(cell.cx, cell.cy, img.width, img.height, scale, rotation);
-          placedAnimals.push({ img, x: cell.cx, y: cell.cy, scale, rotation, style, animal, aabb });
+          placedAnimals.push({ img, x: cell.cx, y: cell.cy, scale, rotation, style, animal, aabb, wobbleStart: 0 });
         }
       }
 
+      generateScenery();
       render();
     }
 
     /**
-     * Render the scene: draw all animals with sticker effect (shadow), then atmospheric overlay.
+     * Draw scenery layer (grass, clouds, rocks) - "busy world" visual noise.
+     */
+    function drawScenery() {
+      const now = Date.now() * 0.001;
+      scenery.forEach(s => {
+        ctx.save();
+        if (s.type === 'grass') {
+          ctx.fillStyle = `hsla(${s.hue}, 55%, 40%, 0.65)`;
+          for (let blade = 0; blade < 4; blade++) {
+            const angle = (blade / 4) * Math.PI * 0.8 + now * 0.2;
+            ctx.beginPath();
+            ctx.moveTo(s.x, s.y);
+            ctx.quadraticCurveTo(
+              s.x + Math.cos(angle) * s.size, s.y + Math.sin(angle) * s.size - s.size * 0.5,
+              s.x + Math.cos(angle) * s.size * 1.2, s.y + Math.sin(angle) * s.size * 1.2 - s.size
+            );
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = ctx.fillStyle;
+            ctx.stroke();
+          }
+        } else if (s.type === 'cloud') {
+          ctx.fillStyle = `rgba(255, 255, 255, ${s.opacity})`;
+          ctx.beginPath();
+          ctx.ellipse(s.x, s.y, s.w, s.h, 0, 0, Math.PI * 2);
+          ctx.ellipse(s.x + s.w * 0.5, s.y - s.h * 0.3, s.w * 0.6, s.h * 0.8, 0, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (s.type === 'rock') {
+          ctx.fillStyle = `rgba(${s.grey}, ${s.grey - 10}, ${s.grey + 10}, 0.7)`;
+          ctx.beginPath();
+          const r = 4;
+          ctx.moveTo(s.x + r, s.y);
+          ctx.lineTo(s.x + s.w - r, s.y);
+          ctx.quadraticCurveTo(s.x + s.w, s.y, s.x + s.w, s.y + r);
+          ctx.lineTo(s.x + s.w, s.y + s.h - r);
+          ctx.quadraticCurveTo(s.x + s.w, s.y + s.h, s.x + s.w - r, s.y + s.h);
+          ctx.lineTo(s.x + r, s.y + s.h);
+          ctx.quadraticCurveTo(s.x, s.y + s.h, s.x, s.y + s.h - r);
+          ctx.lineTo(s.x, s.y + r);
+          ctx.quadraticCurveTo(s.x, s.y, s.x + r, s.y);
+          ctx.fill();
+        }
+        ctx.restore();
+      });
+    }
+
+    /**
+     * Render the scene: scenery, animals (with wobble), atmospheric overlay.
      */
     function render() {
       if (!ctx || !canvasWidth || !canvasHeight) return;
 
       ctx.clearRect(0, 0, canvasWidth, canvasHeight);
 
+      // 1. Scenery layer (grass, clouds, rocks)
+      drawScenery();
+
+      // 2. Animals with sticker effect and optional wobble
+      let needsWobbleFrame = false;
       placedAnimals.forEach(entry => {
-        const { img, x, y, scale, rotation } = entry;
+        const { img, x, y, scale, rotation, wobbleStart = 0 } = entry;
         if (!img) return;
+
+        const wobble = wobbleStart > 0 ? (Date.now() - wobbleStart) / WOBBLE_DURATION : 1;
+        if (wobble < 1) needsWobbleFrame = true;
+        const wobbleAmount = wobble < 1 ? Math.sin(wobble * Math.PI) * 8 : 0;
+        const wobbleRotate = wobble < 1 ? Math.sin(wobble * Math.PI * 4) * 0.15 : 0;
 
         ctx.save();
 
-        // Sticker effect: drop shadow (blur: 5, offset: 3)
         ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
         ctx.shadowBlur = SHADOW_BLUR;
         ctx.shadowOffsetX = SHADOW_OFFSET;
         ctx.shadowOffsetY = SHADOW_OFFSET;
 
         ctx.translate(x, y);
-        ctx.rotate((rotation * Math.PI) / 180);
+        ctx.rotate((rotation * Math.PI) / 180 + wobbleRotate);
+        ctx.translate(wobbleAmount * 0.5, -wobbleAmount);
         ctx.scale(scale, scale);
         ctx.drawImage(img, -img.width / 2, -img.height / 2, img.width, img.height);
 
         ctx.restore();
       });
 
-      // Atmospheric overlay: semi-transparent tint to unify colors
-      ctx.fillStyle = 'rgba(255, 250, 200, 0.12)'; // Slight warm yellow
+      // Atmospheric overlay
+      ctx.fillStyle = 'rgba(255, 250, 200, 0.12)';
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+      // 4. Burst particles (from target on win)
+      burstParticles.forEach(p => {
+        ctx.save();
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+
+      if (needsWobbleFrame) requestAnimationFrame(render);
     }
 
     /**
-     * checkClick(x, y) - AABB collision detection.
-     * Checks if the click/touch coordinates fall within the target animal's bounding box.
-     * @param {number} x - Click x (relative to canvas)
-     * @param {number} y - Click y (relative to canvas)
-     * @returns {boolean} - True if target was hit
+     * Spawn particles bursting from the target's location on the canvas.
      */
-    function checkClick(x, y) {
-      if (gameWon || !targetAnimal) return false;
-
-      const { aabb } = targetAnimal;
-      const hit = x >= aabb.minX && x <= aabb.maxX && y >= aabb.minY && y <= aabb.maxY;
-
-      if (hit) {
-        gameWon = true;
-        showWinOverlay();
+    function launchBurstFromTarget(entry) {
+      const colors = ['#ff6b6b', '#4ecdc4', '#ffe66d', '#95e1d3', '#f38181', '#aa96da'];
+      burstParticles = [];
+      for (let i = 0; i < 50; i++) {
+        const angle = (i / 50) * Math.PI * 2 + Math.random() * 0.5;
+        const speed = 3 + Math.random() * 8;
+        burstParticles.push({
+          x: entry.x,
+          y: entry.y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 2,
+          color: colors[Math.floor(Math.random() * colors.length)],
+          size: 3 + Math.random() * 5,
+          life: 1
+        });
       }
-      return hit;
+      animateBurst();
     }
 
-    /* Get canvas-relative coordinates from mouse or touch event */
+    function animateBurst() {
+      if (!ctx || burstParticles.length === 0) return;
+      burstParticles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.2;
+        p.life -= 0.02;
+      });
+      burstParticles = burstParticles.filter(p => p.life > 0);
+      render();
+      if (burstParticles.length > 0) requestAnimationFrame(animateBurst);
+    }
+
+    /**
+     * checkClick(x, y) - Find topmost animal at position, handle target vs decoy.
+     * Target: win + particle burst. Decoy: wobble + animal sound (or boop).
+     */
+    function checkClick(x, y) {
+      if (gameWon) return;
+
+      // Check in reverse order (last drawn = topmost)
+      for (let i = placedAnimals.length - 1; i >= 0; i--) {
+        const entry = placedAnimals[i];
+        const { aabb, isTarget, animal } = entry;
+        if (x >= aabb.minX && x <= aabb.maxX && y >= aabb.minY && y <= aabb.maxY) {
+          if (isTarget) {
+            gameWon = true;
+            launchBurstFromTarget(entry);
+            setTimeout(showWinOverlay, 400);
+          } else {
+            entry.wobbleStart = Date.now();
+            playAnimalSound(animal);
+            render();
+          }
+          return;
+        }
+      }
+    }
+
+    /* Get canvas-relative coordinates from pointer/mouse/touch event.
+     * Uses canvas internal dimensions vs display dimensions for correct scaling
+     * (important when canvas is scaled on high-DPI or responsive layouts). */
     function getCanvasCoords(e) {
       const rect = canvas.getBoundingClientRect();
       const scaleX = canvas.width / rect.width;
       const scaleY = canvas.height / rect.height;
 
       let clientX, clientY;
-      if (e.touches) {
+      if (e.touches && e.touches.length > 0) {
         clientX = e.touches[0].clientX;
         clientY = e.touches[0].clientY;
+      } else if (e.changedTouches && e.changedTouches.length > 0) {
+        clientX = e.changedTouches[0].clientX;
+        clientY = e.changedTouches[0].clientY;
       } else {
         clientX = e.clientX;
         clientY = e.clientY;
       }
 
-      return {
-        x: (clientX - rect.left) * scaleX,
-        y: (clientY - rect.top) * scaleY
-      };
+      const x = (clientX - rect.left) * scaleX;
+      const y = (clientY - rect.top) * scaleY;
+      return { x, y };
     }
 
     function handlePointerDown(e) {
-      e.preventDefault(); // Prevent scrolling/zooming when touching canvas on mobile
+      e.preventDefault();
+      e.stopPropagation();
       const coords = getCanvasCoords(e);
       checkClick(coords.x, coords.y);
     }
@@ -639,13 +887,10 @@
       initCanvas();
       generateLevel();
 
-      // Attach input handlers after canvas is ready
+      // Use pointerdown only (works for mouse + touch) to avoid double-firing on mobile
+      // where both touchstart and click would fire with potentially different coords
       const gameCanvas = document.getElementById('gameCanvas');
-      gameCanvas.addEventListener('click', (e) => {
-        const coords = getCanvasCoords(e);
-        checkClick(coords.x, coords.y);
-      });
-      gameCanvas.addEventListener('touchstart', handlePointerDown, { passive: false });
+      gameCanvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
     });
   </script>
 </body>
