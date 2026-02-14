@@ -1,5 +1,5 @@
 /* ===== GAME CONFIGURATION ===== */
-const ANIMALS = ['elephant', 'giraffe', 'hippo', 'monkey', 'panda', 'parrot', 'penguin', 'pig', 'rabbit', 'snake'];
+const ANIMALS = ['bear', 'buffalo', 'chick', 'chicken', 'cow', 'crocodile', 'dog', 'duck', 'elephant', 'frog', 'giraffe', 'goat', 'gorilla', 'hippo', 'horse', 'monkey', 'moose', 'narwhal', 'owl', 'panda', 'parrot', 'penguin', 'pig', 'rabbit', 'rhino', 'snake', 'sloth', 'walrus', 'whale', 'zebra'];
 const STYLES = ['round', 'square'];
 /* Level-based difficulty: base values + per-level scaling */
 const DECOY_BASE = 15;
@@ -8,13 +8,13 @@ const CAMOUFLAGE_LEVEL = 2;  // Camouflage kicks in at this level
 const CAMOUFLAGE_BIAS = 0.75;  // 75% chance same-color when in "near target" zone
 /* Color groups for camouflage (animals that look similar / same color family) */
 const COLOR_GROUPS = {
-  blue: ['penguin', 'hippo'],
-  dark: ['panda'],
-  brown: ['elephant', 'giraffe', 'monkey'],
-  grey: ['rabbit'],
-  green: ['snake'],
-  pink: ['pig'],
-  colorful: ['parrot']
+  blue: ['penguin', 'hippo', 'whale'],
+  dark: ['panda', 'bear', 'gorilla', 'zebra'],
+  brown: ['elephant', 'giraffe', 'monkey', 'buffalo', 'chicken', 'cow', 'dog', 'goat', 'horse', 'moose', 'owl'],
+  grey: ['rabbit', 'rhino', 'sloth', 'walrus', 'narwhal'],
+  green: ['snake', 'crocodile', 'frog'],
+  pink: ['pig', 'chick'],
+  colorful: ['parrot', 'duck']
 };
 const ROTATION_RANGE = 15; // degrees
 const CELL_BREATHING = 0.8;  // Animals use 80% of cell (20% breathing room)
