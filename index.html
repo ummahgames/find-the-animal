@@ -16,8 +16,9 @@
       font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       min-height: 100vh;
       overflow: hidden;
-      /* Soft pastel gradient background */
-      background: linear-gradient(135deg, #e8f4f8 0%, #f5e6f0 50%, #f0f4e8 100%);
+      /* Thematic gradient - updated by JS based on level */
+      background: linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 50%, #81c784 100%);
+      transition: background 0.6s ease;
       display: flex;
       flex-direction: column;
       align-items: center;
@@ -219,10 +220,6 @@
     /* Level-based difficulty: base values + per-level scaling */
     const DECOY_BASE = 15;
     const DECOY_PER_LEVEL = 4;
-    const SCALE_BASE_MIN = 0.5;
-    const SCALE_BASE_MAX = 0.75;
-    const SCALE_REDUCE_PER_LEVEL = 0.025;
-    const SCALE_FLOOR = 0.28;
     const CAMOUFLAGE_LEVEL = 2;  // Camouflage kicks in at this level
     const CAMOUFLAGE_BIAS = 0.75;  // 75% chance same-color when in "near target" zone
     /* Color groups for camouflage (animals that look similar / same color family) */
@@ -236,10 +233,9 @@
       colorful: ['parrot']
     };
     const ROTATION_RANGE = 15; // degrees
-    const GRID_COLS_BASE = 6;
-    const GRID_ROWS_BASE = 5;
-    const GRID_EXPAND_PER_LEVELS = 5;  // Add 1 col/row every N levels
-    const MIN_CELL_SIZE = 55;  // Minimum px per cell - prevents overcrowding on phones
+    const CELL_BREATHING = 0.8;  // Animals use 80% of cell (20% breathing room)
+    const HINT_DELAY_MS = 15000;  // "Getting Warmer" - target pulsates after 15s
+    const HINT_INTERVAL_MS = 5000;  // Pulsate every 5s until found
     const JITTER = 0.25;  // Max offset as fraction of cell size (±25% = "not fully grid")
     const SHADOW_BLUR = 5;
     const SHADOW_OFFSET = 3;
@@ -299,6 +295,10 @@
     let scenery = [];
     let audioCtx = null;
     let burstParticles = [];  // Particles exploding from target on win
+    let poofParticles = [];   // White smoke "poof" on decoy click
+    let levelStartTime = 0;
+    let hintTimeoutId = null;
+    let hintIntervalId = null;
 
     function getColorGroup(animal) {
       for (const [group, animals] of Object.entries(COLOR_GROUPS)) {
@@ -463,22 +463,20 @@
     }
 
     /**
-     * Compute responsive grid size based on screen dimensions.
-     * Ensures cells are never smaller than MIN_CELL_SIZE to avoid overcrowding on phones.
+     * Screen-aware grid: portrait phones get smaller cells (65px), landscape gets 80px.
+     * Fixes aspect ratio mismatch (6×5 vs 9×16) and fat-finger problem.
      */
     function getResponsiveGridSize() {
-      const maxCols = Math.max(3, Math.floor(canvasWidth / MIN_CELL_SIZE));
-      const maxRows = Math.max(3, Math.floor(canvasHeight / MIN_CELL_SIZE));
-      const levelExpand = Math.floor((level - 1) / GRID_EXPAND_PER_LEVELS);
-      const gridCols = Math.min(
-        GRID_COLS_BASE + levelExpand,
-        maxCols
-      );
-      const gridRows = Math.min(
-        GRID_ROWS_BASE + levelExpand,
-        maxRows
-      );
-      return { gridCols: Math.max(3, gridCols), gridRows: Math.max(3, gridRows) };
+      const isPortrait = canvasHeight > canvasWidth;
+      const targetCellSize = isPortrait ? 65 : 80;
+
+      const gridCols = Math.floor(canvasWidth / targetCellSize);
+      const gridRows = Math.floor(canvasHeight / targetCellSize);
+
+      return {
+        gridCols: Math.max(3, gridCols),
+        gridRows: Math.max(3, gridRows)
+      };
     }
 
     /**
@@ -488,19 +486,24 @@
     function generateLevel() {
       placedAnimals = [];
       burstParticles = [];
+      poofParticles = [];
       gameWon = false;
+      if (hintTimeoutId) clearTimeout(hintTimeoutId);
+      if (hintIntervalId) clearInterval(hintIntervalId);
+      hintTimeoutId = hintIntervalId = null;
 
       // Responsive grid: adapts to screen size, never overcrowds
       const { gridCols, gridRows } = getResponsiveGridSize();
       const maxCells = gridCols * gridRows - 1;
       const rawDecoys = DECOY_BASE + (level - 1) * DECOY_PER_LEVEL + Math.floor(Math.random() * 4);
-      // On small screens, cap decoys to ~65% of cells so grid stays readable
       const decoyCap = Math.max(8, Math.floor(maxCells * 0.65));
       const decoyCount = Math.min(rawDecoys, maxCells, decoyCap);
-      const scaleReduce = Math.min((level - 1) * SCALE_REDUCE_PER_LEVEL, 0.4);
-      const scaleMin = Math.max(SCALE_BASE_MIN - scaleReduce, SCALE_FLOOR);
-      const scaleMax = Math.max(SCALE_BASE_MAX - scaleReduce, SCALE_FLOOR);
       const useCamouflage = level >= CAMOUFLAGE_LEVEL;
+
+      // Scale animals to cell size - never larger than cell, prevents clumping
+      const cellW = canvasWidth / gridCols;
+      const cellH = canvasHeight / gridRows;
+      const maxCellDimension = Math.min(cellW, cellH);
 
       // 1. Pick target
       const targetAnimalName = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
@@ -514,6 +517,14 @@
 
       document.getElementById('levelBadge').textContent = `Level ${level}`;
       document.getElementById('targetText').textContent = `Find the ${targetInfo.displayName}!`;
+
+      // Thematic level backgrounds: Meadow (1) -> Ocean (2) -> Desert (3) -> cycle
+      const themes = [
+        'linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 50%, #81c784 100%)',  // Meadow
+        'linear-gradient(135deg, #bbdefb 0%, #90caf9 50%, #64b5f6 100%)',  // Ocean
+        'linear-gradient(135deg, #ffe0b2 0%, #ffcc80 50%, #ffb74d 100%)'   // Desert/Sunset
+      ];
+      document.body.style.background = themes[(level - 1) % themes.length];
       const previewImg = ImageBank.get(targetStyle, targetAnimalName);
       const previewEl = document.getElementById('targetPreview');
       if (previewImg) previewEl.src = previewImg.src;
@@ -522,8 +533,6 @@
       const sameColorDecoys = getSameColorAnimals(targetAnimalName);
 
       // 2. Build grid with row/col for "near target" detection
-      const cellW = canvasWidth / gridCols;
-      const cellH = canvasHeight / gridRows;
       const allCells = [];
       for (let row = 0; row < gridRows; row++) {
         for (let col = 0; col < gridCols; col++) {
@@ -543,7 +552,8 @@
       const decoyCells = [...allCells.slice(0, targetCellIdx), ...allCells.slice(targetCellIdx + 1)];
 
       if (targetImg) {
-        const scale = scaleMin + Math.random() * (scaleMax - scaleMin);
+        const scaleToFit = (maxCellDimension * CELL_BREATHING) / Math.max(targetImg.width, targetImg.height);
+        const scale = scaleToFit * (0.92 + Math.random() * 0.08);
         const rotation = (Math.random() * 2 - 1) * ROTATION_RANGE;
         let placed = false;
         for (let attempt = 0; attempt < 8 && !placed; attempt++) {
@@ -594,7 +604,8 @@
         const img = ImageBank.get(style, animal);
         if (!img) continue;
 
-        const scale = scaleMin + Math.random() * (scaleMax - scaleMin);
+        const scaleToFit = (maxCellDimension * CELL_BREATHING) / Math.max(img.width, img.height);
+        const scale = scaleToFit * (0.92 + Math.random() * 0.08);
         const rotation = (Math.random() * 2 - 1) * ROTATION_RANGE;
 
         let placed = false;
@@ -617,6 +628,22 @@
       }
 
       generateScenery();
+      levelStartTime = Date.now();
+
+      // "Getting Warmer" hint: after 15s, target pulsates every 5s
+      hintTimeoutId = setTimeout(() => {
+        if (gameWon || !targetAnimal) return;
+        targetAnimal.hintPulseStart = Date.now();
+        render();
+        hintIntervalId = setInterval(() => {
+          if (gameWon || !targetAnimal) {
+            if (hintIntervalId) clearInterval(hintIntervalId);
+            return;
+          }
+          targetAnimal.hintPulseStart = Date.now();
+        }, HINT_INTERVAL_MS);
+      }, HINT_DELAY_MS);
+
       render();
     }
 
@@ -677,16 +704,26 @@
       // 1. Scenery layer (grass, clouds, rocks)
       drawScenery();
 
-      // 2. Animals with sticker effect and optional wobble
+      // 2. Animals with sticker effect, wobble, and "Getting Warmer" hint pulse
       let needsWobbleFrame = false;
       placedAnimals.forEach(entry => {
-        const { img, x, y, scale, rotation, wobbleStart = 0 } = entry;
+        const { img, x, y, scale, rotation, wobbleStart = 0, hintPulseStart = 0 } = entry;
         if (!img) return;
 
         const wobble = wobbleStart > 0 ? (Date.now() - wobbleStart) / WOBBLE_DURATION : 1;
         if (wobble < 1) needsWobbleFrame = true;
         const wobbleAmount = wobble < 1 ? Math.sin(wobble * Math.PI) * 8 : 0;
         const wobbleRotate = wobble < 1 ? Math.sin(wobble * Math.PI * 4) * 0.15 : 0;
+
+        // "Getting Warmer" hint: target pulsates (scale 1 -> 1.12 -> 1) over ~400ms
+        let hintPulseMult = 1;
+        if (hintPulseStart > 0 && entry.isTarget) {
+          const elapsed = Date.now() - hintPulseStart;
+          if (elapsed < 450) {
+            hintPulseMult = 1 + 0.1 * Math.sin(elapsed * Math.PI / 450);
+            needsWobbleFrame = true;
+          }
+        }
 
         ctx.save();
 
@@ -698,7 +735,7 @@
         ctx.translate(x, y);
         ctx.rotate((rotation * Math.PI) / 180 + wobbleRotate);
         ctx.translate(wobbleAmount * 0.5, -wobbleAmount);
-        ctx.scale(scale, scale);
+        ctx.scale(scale * hintPulseMult, scale * hintPulseMult);
         ctx.drawImage(img, -img.width / 2, -img.height / 2, img.width, img.height);
 
         ctx.restore();
@@ -708,7 +745,27 @@
       ctx.fillStyle = 'rgba(255, 250, 200, 0.12)';
       ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-      // 4. Burst particles (from target on win)
+      // 4. Poof particles (white smoke on decoy click)
+      poofParticles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.vy += 0.05;
+        p.life -= 0.04;
+        p.size *= 1.02;
+      });
+      poofParticles = poofParticles.filter(p => p.life > 0);
+      poofParticles.forEach(p => {
+        ctx.save();
+        ctx.globalAlpha = p.life;
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.6 * p.life})`;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      });
+      if (poofParticles.length > 0) needsWobbleFrame = true;
+
+      // 5. Burst particles (from target on win)
       burstParticles.forEach(p => {
         ctx.save();
         ctx.globalAlpha = p.life;
@@ -719,7 +776,7 @@
         ctx.restore();
       });
 
-      if (needsWobbleFrame) requestAnimationFrame(render);
+      if (needsWobbleFrame || poofParticles.length > 0) requestAnimationFrame(render);
     }
 
     /**
@@ -758,6 +815,23 @@
     }
 
     /**
+     * Spawn white "poof" smoke when clicking a decoy - tactile feedback for kids.
+     */
+    function spawnPoof(x, y) {
+      for (let i = 0; i < 12; i++) {
+        const angle = (i / 12) * Math.PI * 2 + Math.random() * 0.5;
+        const speed = 1 + Math.random() * 3;
+        poofParticles.push({
+          x, y,
+          vx: Math.cos(angle) * speed,
+          vy: Math.sin(angle) * speed - 1,
+          size: 8 + Math.random() * 12,
+          life: 1
+        });
+      }
+    }
+
+    /**
      * checkClick(x, y) - Find topmost animal at position, handle target vs decoy.
      * Target: win + particle burst. Decoy: wobble + animal sound (or boop).
      */
@@ -775,6 +849,7 @@
             setTimeout(showWinOverlay, 400);
           } else {
             entry.wobbleStart = Date.now();
+            spawnPoof(entry.x, entry.y);
             playAnimalSound(animal);
             render();
           }
