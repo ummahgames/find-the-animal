@@ -4,7 +4,7 @@ Turn Find the Animal into a small animal discovery adventure: explore illustrate
 
 The intended audience is children and families, inferred from the existing artwork and comments in the game code. Design the default experience around relaxed play, readable visual prompts, and forgiving controls. Provide an optional challenge mode for players who want speed or harder matching.
 
-The implementation remains a static, client-side website. All game data, images, effects, audio, and saves live in the browser or bundled files. This plan proposes the redesign; the current gameplay files have not been changed.
+The implementation remains a static, client-side website. All game data, images, effects, audio, and saves live in the browser or bundled files. The Wild Trails redesign described here has now been implemented in the main gameplay files, with deterministic generator tests under `tests/`.
 
 ## Current game findings
 

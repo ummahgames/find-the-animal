@@ -1,11 +1,34 @@
-# Find the Animal
+# Find the Animal: Wild Trails
 
-A browser-based spot-the-animal game. Click the target animal among decoys; difficulty increases each level with more decoys and color camouflage.
+A client-side animal discovery game for children and families. Players explore six illustrated habitats, complete 48 progressively harder trails, collect 30 animals in a field journal, and can also play custom or daily trails.
 
 ## Run
 
-Open `index.html` in a browser, or serve the folder on any static host (e.g. LAMP).
+Open `index.html` directly, or serve this directory from any static file server. The game has no build step, server, account, analytics, or network dependency.
 
-## Requirements
+Progress, discoveries, badges, and settings are saved to `localStorage` when the browser permits it. If storage is unavailable, the current session remains playable in memory.
 
-- `assets/round/` and `assets/square/` with PNGs for: elephant, giraffe, hippo, monkey, panda, parrot, penguin, pig, rabbit, snake
+## Controls
+
+- Mouse or touch: choose an animal directly.
+- Keyboard: use Tab to move among animal choices, then Enter or Space to choose.
+- Hint: reveals a region first, then highlights the target.
+- Pause: stops the challenge clock and keeps the scene intact.
+
+## Game structure
+
+- Adventure contains six habitats with eight trails each. Complete six trails to unlock the next habitat.
+- Later trails introduce exact portrait matching and multi-animal ranger lists.
+- Free Play supports three difficulty levels and an optional challenge clock.
+- Daily Trail uses a deterministic seed based on the local calendar date.
+- All 30 animals have round and square PNG variants under `assets/`.
+
+## Verification
+
+Run the built-in Node tests:
+
+```sh
+node --test tests/game.test.cjs
+```
+
+The tests generate 12,000 deterministic rounds, check gameplay invariants, verify unlock and save behavior, confirm all declared assets exist, and check that JavaScript DOM references match the HTML shell.

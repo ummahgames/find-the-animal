@@ -1,804 +1,452 @@
-/* ===== GAME CONFIGURATION ===== */
-const ANIMALS = ['bear', 'buffalo', 'chick', 'chicken', 'cow', 'crocodile', 'dog', 'duck', 'elephant', 'frog', 'giraffe', 'goat', 'gorilla', 'hippo', 'horse', 'monkey', 'moose', 'narwhal', 'owl', 'panda', 'parrot', 'penguin', 'pig', 'rabbit', 'rhino', 'snake', 'sloth', 'walrus', 'whale', 'zebra'];
-const STYLES = ['round', 'square'];
-/* Level-based difficulty: base values + per-level scaling */
-const DECOY_BASE = 15;
-const DECOY_PER_LEVEL = 4;
-const CAMOUFLAGE_LEVEL = 2;  // Camouflage kicks in at this level
-const CAMOUFLAGE_BIAS = 0.75;  // 75% chance same-color when in "near target" zone
-/* Color groups for camouflage (animals that look similar / same color family) */
-const COLOR_GROUPS = {
-  blue: ['penguin', 'hippo', 'whale'],
-  dark: ['panda', 'bear', 'gorilla', 'zebra'],
-  brown: ['elephant', 'giraffe', 'monkey', 'buffalo', 'chicken', 'cow', 'dog', 'goat', 'horse', 'moose', 'owl'],
-  grey: ['rabbit', 'rhino', 'sloth', 'walrus', 'narwhal'],
-  green: ['snake', 'crocodile', 'frog'],
-  pink: ['pig', 'chick'],
-  colorful: ['parrot', 'duck']
-};
-const ROTATION_RANGE = 15; // degrees
-const CELL_BREATHING = 0.8;  // Animals use 80% of cell (20% breathing room)
-const HINT_DELAY_MS = 15000;  // "Getting Warmer" - target pulsates after 15s
-const HINT_INTERVAL_MS = 5000;  // Pulsate every 5s until found
-const JITTER = 0.25;  // Max offset as fraction of cell size (±25% = "not fully grid")
-const TARGET_MIN_VISIBLE = 0.8;  // Target must be at least 80% visible (never clipped at edge)
-const SHADOW_BLUR = 5;
-const SHADOW_OFFSET = 3;
-const WOBBLE_DURATION = 400;  // ms
-const HAPPY_JUMP_DURATION = 500;  // ms - target bounces when found
-const HAPPY_JUMP_HEIGHT = 28;
+/* Find the Animal: Wild Trails — entirely local, client-side game. */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  if (root && root.document) {
+    root.WildTrails = api;
+    root.addEventListener('DOMContentLoaded', () => api.init(root.document));
+  }
+})(typeof window !== 'undefined' ? window : null, function () {
+  'use strict';
 
-/* ===== IMAGE BANK: Preloads all animal images before game starts ===== */
-const ImageBank = {
-  images: {},
-  loaded: 0,
-  total: 0,
+  const VERSION = 2;
+  const STORAGE_KEY = 'findTheAnimal.wildTrails.v2';
+  const ROUNDS_PER_HABITAT = 8;
+  const UNLOCK_AFTER = 6;
 
-  /**
-   * Preload all animal images from round and square folders.
-   * Returns a Promise that resolves when all images are loaded.
-   */
-  loadAll() {
-    const promises = [];
-    STYLES.forEach(style => {
-      ANIMALS.forEach(animal => {
-        const key = `${style}_${animal}`;
-        const path = `./assets/${style}/${animal}.png`;
-        this.total++;
-        const promise = new Promise((resolve, reject) => {
-          const img = new Image();
-          img.onload = () => {
-            this.images[key] = img;
-            this.loaded++;
-            resolve();
-          };
-          img.onerror = () => {
-            console.warn(`Failed to load: ${path}`);
-            this.loaded++;
-            resolve(); // Continue even if one fails
-          };
-          img.src = path;
+  const ANIMALS = {
+    bear: { clue: 'Look for round ears and a broad brown face.', homes: ['woodland'] },
+    buffalo: { clue: 'Look for strong horns and a wide, sturdy head.', homes: ['savanna'] },
+    chick: { clue: 'Look for a tiny yellow face and a little orange beak.', homes: ['farm'] },
+    chicken: { clue: 'Look for a red comb and a curious farmyard face.', homes: ['farm'] },
+    cow: { clue: 'Look for soft ears and a friendly spotted face.', homes: ['farm'] },
+    crocodile: { clue: 'Look for green scales and a long, toothy snout.', homes: ['rainforest'] },
+    dog: { clue: 'Look for floppy ears and a loyal, friendly face.', homes: ['farm', 'woodland'] },
+    duck: { clue: 'Look for a flat beak and bright water-loving feathers.', homes: ['farm', 'coast'] },
+    elephant: { clue: 'Look for enormous ears, tusks, and a long trunk.', homes: ['savanna'] },
+    frog: { clue: 'Look for wide eyes and a small green face.', homes: ['rainforest', 'bamboo', 'woodland'] },
+    giraffe: { clue: 'Look for golden patches and two little horns.', homes: ['savanna'] },
+    goat: { clue: 'Look for small horns and a neat little beard.', homes: ['farm'] },
+    gorilla: { clue: 'Look for a dark face with a powerful brow.', homes: ['rainforest'] },
+    hippo: { clue: 'Look for tiny ears on a big blue-grey face.', homes: ['savanna'] },
+    horse: { clue: 'Look for tall ears and a long, gentle face.', homes: ['farm'] },
+    monkey: { clue: 'Look for round ears and a playful smile.', homes: ['rainforest', 'bamboo'] },
+    moose: { clue: 'Look for the grandest antlers in the woodland.', homes: ['woodland'] },
+    narwhal: { clue: 'Look for the whale with one magical-looking tusk.', homes: ['coast'] },
+    owl: { clue: 'Look closely at its big, watchful eyes.', homes: ['woodland', 'bamboo'] },
+    panda: { clue: 'Look for black eye patches and round black ears.', homes: ['bamboo'] },
+    parrot: { clue: 'Look for a curved beak and brilliant feathers.', homes: ['rainforest'] },
+    penguin: { clue: 'Look for a black-and-white face and orange beak.', homes: ['coast'] },
+    pig: { clue: 'Look for a pink snout and two perky ears.', homes: ['farm'] },
+    rabbit: { clue: 'Look for two very long ears and a small nose.', homes: ['farm', 'woodland'] },
+    rhino: { clue: 'Look for thick grey skin and a horn on its nose.', homes: ['savanna'] },
+    snake: { clue: 'Look for bright scales and no ears at all.', homes: ['rainforest', 'woodland'] },
+    sloth: { clue: 'Look for a calm smile and dark patches by its eyes.', homes: ['rainforest'] },
+    walrus: { clue: 'Look for whiskers and two long white tusks.', homes: ['coast'] },
+    whale: { clue: 'Look for a huge blue ocean friend with a wide smile.', homes: ['coast'] },
+    zebra: { clue: 'Look for bold black-and-white stripes.', homes: ['savanna'] }
+  };
+
+  const HABITATS = [
+    { id: 'farm', name: 'Farm Meadow', icon: '🌾', color: '#d7e7a9', accent: '#557a3d', description: 'Barn doors, pond edges, and friendly faces in the grass.', pool: ['cow','pig','goat','horse','chicken','chick','dog','duck','rabbit'] },
+    { id: 'woodland', name: 'Whispering Woodland', icon: '🌲', color: '#a9cfb0', accent: '#315f48', description: 'Follow the quiet path beneath the mossy trees.', pool: ['bear','moose','owl','rabbit','frog','snake','dog'] },
+    { id: 'savanna', name: 'Golden Savanna', icon: '☀️', color: '#ecd182', accent: '#9b642f', description: 'Search the sunlit grass around a busy waterhole.', pool: ['elephant','giraffe','zebra','buffalo','rhino','hippo'] },
+    { id: 'rainforest', name: 'Emerald Rainforest', icon: '🌿', color: '#83c9a3', accent: '#1e6848', description: 'Peer between giant leaves, vines, and river stones.', pool: ['monkey','gorilla','parrot','sloth','frog','snake','crocodile'] },
+    { id: 'bamboo', name: 'Bamboo Grove', icon: '🎋', color: '#d8e7a0', accent: '#4f7842', description: 'A peaceful green maze with some surprising visitors.', pool: ['panda','monkey','frog','owl','rabbit','duck'] },
+    { id: 'coast', name: 'Sparkling Coast', icon: '🌊', color: '#9fd9df', accent: '#286e7a', description: 'Scan the shore, blue water, and a chilly island cove.', pool: ['whale','narwhal','walrus','penguin','duck'] }
+  ];
+
+  const ROUND_RECIPES = [
+    { title: 'First Footsteps', description: 'One friendly face', count: 6, targets: 1, rule: 'species' },
+    { title: 'Across the Meadow', description: 'Two finds, one trail', count: 9, targets: 2, rule: 'species' },
+    { title: 'Colour Neighbours', description: 'Look past similar colours', count: 11, targets: 3, rule: 'species' },
+    { title: 'Shape Shifters', description: 'Match the exact portrait', count: 13, targets: 3, rule: 'exact' },
+    { title: 'Close Cousins', description: 'Small details matter', count: 14, targets: 3, rule: 'exact' },
+    { title: 'Ranger’s List', description: 'Find the list in any order', count: 16, targets: 3, rule: 'checklist' },
+    { title: 'Hidden Corners', description: 'A busy expedition', count: 18, targets: 3, rule: 'exact' },
+    { title: 'Habitat Star', description: 'The grand four-find trail', count: 20, targets: 4, rule: 'checklist' }
+  ];
+
+  function titleCase(value) { return value.replace(/\b\w/g, char => char.toUpperCase()); }
+  function hashString(value) {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i += 1) { hash ^= value.charCodeAt(i); hash = Math.imul(hash, 16777619); }
+    return hash >>> 0;
+  }
+  function makeRandom(seed) {
+    let value = typeof seed === 'number' ? seed >>> 0 : hashString(String(seed));
+    return function () { value += 0x6d2b79f5; let n = value; n = Math.imul(n ^ n >>> 15, n | 1); n ^= n + Math.imul(n ^ n >>> 7, n | 61); return ((n ^ n >>> 14) >>> 0) / 4294967296; };
+  }
+  function shuffle(values, random) {
+    const copy = values.slice();
+    for (let i = copy.length - 1; i > 0; i -= 1) { const j = Math.floor(random() * (i + 1)); [copy[i], copy[j]] = [copy[j], copy[i]]; }
+    return copy;
+  }
+  function sample(values, random) { return values[Math.floor(random() * values.length)]; }
+
+  function buildPositions(count, random) {
+    const cols = count <= 8 ? 4 : 5;
+    const rows = Math.ceil(count / cols);
+    const cells = [];
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) {
+        const x = cols === 1 ? 50 : 9 + col * (82 / (cols - 1));
+        const y = rows === 1 ? 50 : 13 + row * (74 / (rows - 1));
+        cells.push({ x, y });
+      }
+    }
+    return shuffle(cells, random).slice(0, count).map(cell => ({
+      x: Math.max(7, Math.min(93, cell.x + (random() - .5) * 4)),
+      y: Math.max(10, Math.min(90, cell.y + (random() - .5) * 5)),
+      rotation: Math.round((random() - .5) * 18)
+    }));
+  }
+
+  function generateRound(options) {
+    const habitat = typeof options.habitat === 'string' ? HABITATS.find(item => item.id === options.habitat) : options.habitat;
+    if (!habitat) throw new Error('Unknown habitat');
+    const recipe = Object.assign({}, ROUND_RECIPES[options.roundIndex || 0], options.recipe || {});
+    const random = makeRandom(options.seed || `${habitat.id}:${options.roundIndex || 0}`);
+    const targetSpecies = shuffle(habitat.pool, random).slice(0, Math.min(recipe.targets, habitat.pool.length));
+    const targetInstances = targetSpecies.map((animal, index) => ({
+      id: `target-${index}-${animal}`,
+      animal,
+      style: recipe.rule === 'exact' ? sample(['round','square'], random) : 'round',
+      isTarget: true
+    }));
+    const instances = targetInstances.slice();
+
+    if (recipe.rule === 'exact') {
+      targetInstances.forEach((target, index) => {
+        if (instances.length < recipe.count) instances.push({ id: `lookalike-${index}-${target.animal}`, animal: target.animal, style: target.style === 'round' ? 'square' : 'round', isTarget: false });
+      });
+    }
+
+    let counter = 0;
+    while (instances.length < recipe.count) {
+      let animal = sample(habitat.pool, random);
+      if (recipe.rule !== 'exact' && targetSpecies.includes(animal)) {
+        animal = sample(habitat.pool.filter(name => !targetSpecies.includes(name)), random);
+      }
+      let style = recipe.rule === 'exact' ? sample(['round','square'], random) : 'round';
+      if (recipe.rule === 'exact') {
+        const matchingTarget = targetInstances.find(target => target.animal === animal && target.style === style);
+        if (matchingTarget) style = style === 'round' ? 'square' : 'round';
+      }
+      instances.push({ id: `decoy-${counter}-${animal}-${style}`, animal, style, isTarget: false });
+      counter += 1;
+    }
+
+    const positions = buildPositions(instances.length, random);
+    const placed = shuffle(instances, random).map((instance, index) => Object.assign({}, instance, positions[index]));
+    return { habitatId: habitat.id, recipe, seed: options.seed, instances: placed, targetIds: targetInstances.map(item => item.id), targetSpecies };
+  }
+
+  function defaultSave() {
+    return { version: VERSION, completed: {}, badges: {}, discovered: [], settings: { sound: true, motion: true, autoHint: true }, current: null, daily: {} };
+  }
+  function normalizeSave(value) {
+    const base = defaultSave();
+    if (!value || typeof value !== 'object' || value.version !== VERSION) return base;
+    if (value.completed && typeof value.completed === 'object') {
+      for (const [key, complete] of Object.entries(value.completed)) {
+        const [habitatId, roundText] = key.split(':');
+        if (complete === true && HABITATS.some(habitat => habitat.id === habitatId) && Number(roundText) >= 0 && Number(roundText) < ROUNDS_PER_HABITAT) base.completed[key] = true;
+      }
+    }
+    base.badges = value.badges && typeof value.badges === 'object' ? value.badges : {};
+    base.discovered = Array.isArray(value.discovered) ? [...new Set(value.discovered.filter(name => ANIMALS[name]))] : [];
+    if (value.settings && typeof value.settings === 'object') {
+      for (const key of ['sound','motion','autoHint']) if (typeof value.settings[key] === 'boolean') base.settings[key] = value.settings[key];
+    }
+    base.current = value.current && typeof value.current === 'object' ? value.current : null;
+    base.daily = value.daily && typeof value.daily === 'object' ? value.daily : {};
+    return base;
+  }
+  function completedCount(save, habitatId) { return Object.keys(save.completed).filter(key => key.startsWith(`${habitatId}:`) && save.completed[key]).length; }
+  function habitatUnlocked(save, index) { return index === 0 || completedCount(save, HABITATS[index - 1].id) >= UNLOCK_AFTER; }
+  function roundUnlocked(save, habitat, roundIndex) { return roundIndex === 0 || !!save.completed[`${habitat.id}:${roundIndex - 1}`]; }
+
+  function createApp(doc) {
+    const byId = id => doc.getElementById(id);
+    const state = {
+      save: defaultSave(), screen: 'home', selectedHabitat: 0, journalFilter: 'all', round: null,
+      hintStage: 0, mistakes: 0, hints: 0, paused: false, timerId: null, autoHintId: null,
+      startedAt: 0, pausedAt: 0, pausedDuration: 0, messageTimer: null, toastTimer: null, audio: null, storageAvailable: true, settingsPausedRound: false
+    };
+
+    function loadSave() {
+      try { state.save = normalizeSave(JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null')); }
+      catch (error) { state.save = defaultSave(); state.storageAvailable = false; }
+    }
+    function persist() {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.save)); }
+      catch (error) { state.storageAvailable = false; byId('saveNote').textContent = 'Progress will last for this visit.'; }
+    }
+    function imagePath(animal, style = 'round') { return `assets/${style}/${animal}.png`; }
+    function closeDialog(dialog) { if (dialog && dialog.open) dialog.close(); }
+    function showScreen(name) {
+      doc.querySelectorAll('.screen').forEach(screen => screen.classList.toggle('active', screen.id === `${name}Screen`));
+      state.screen = name;
+      if (name !== 'play') stopClock();
+      byId('mainContent').focus({ preventScroll: true });
+    }
+    function toast(message) {
+      const element = byId('toast'); clearTimeout(state.toastTimer); element.textContent = message; element.classList.remove('visible'); void element.offsetWidth; element.classList.add('visible');
+      state.toastTimer = setTimeout(() => element.classList.remove('visible'), 2900);
+    }
+
+    function sound(kind) {
+      if (!state.save.settings.sound) return;
+      try {
+        const AudioContext = window.AudioContext || window.webkitAudioContext;
+        if (!AudioContext) return;
+        state.audio = state.audio || new AudioContext();
+        if (state.audio.state === 'suspended') state.audio.resume();
+        const now = state.audio.currentTime;
+        const notes = kind === 'found' ? [523,659,784] : kind === 'complete' ? [392,523,659,784] : [190,145];
+        notes.forEach((frequency, index) => {
+          const oscillator = state.audio.createOscillator(); const gain = state.audio.createGain();
+          oscillator.type = kind === 'wrong' ? 'triangle' : 'sine'; oscillator.frequency.value = frequency;
+          gain.gain.setValueAtTime(.001, now + index * .07); gain.gain.exponentialRampToValueAtTime(.12, now + index * .07 + .015); gain.gain.exponentialRampToValueAtTime(.001, now + index * .07 + .16);
+          oscillator.connect(gain); gain.connect(state.audio.destination); oscillator.start(now + index * .07); oscillator.stop(now + index * .07 + .18);
         });
-        promises.push(promise);
-      });
-    });
-    return Promise.all(promises);
-  },
-
-  get(style, animal) {
-    return this.images[`${style}_${animal}`];
-  }
-};
-
-/* ===== GAME STATE ===== */
-let canvas, ctx, confettiCtx;
-let canvasWidth, canvasHeight;
-let placedAnimals = [];
-let targetAnimal = null;
-let targetInfo = null;
-let gameWon = false;
-let confettiParticles = [];
-let level = 1;
-let scenery = [];
-let audioCtx = null;
-let burstParticles = [];  // Particles exploding from target on win
-let poofParticles = [];   // White smoke "poof" on decoy click
-let levelStartTime = 0;
-let hintTimeoutId = null;
-let hintIntervalId = null;
-
-function getColorGroup(animal) {
-  for (const [group, animals] of Object.entries(COLOR_GROUPS)) {
-    if (animals.includes(animal)) return group;
-  }
-  return 'colorful';
-}
-
-function getSameColorAnimals(targetAnimalName) {
-  const group = getColorGroup(targetAnimalName);
-  return COLOR_GROUPS[group].filter(a => a !== targetAnimalName);
-}
-
-/**
- * Generate scenery (grass, clouds, rocks) for "busy world" visual noise.
- * Called at level start; drawn before animals.
- */
-function generateScenery() {
-  scenery = [];
-  const rnd = (min, max) => min + Math.random() * (max - min);
-
-  // Grass tufts - small green arcs in clusters
-  const grassClusters = 8 + Math.floor(Math.random() * 6);
-  for (let c = 0; c < grassClusters; c++) {
-    const cx = rnd(0.1, 0.9) * canvasWidth;
-    const cy = rnd(0.1, 0.9) * canvasHeight;
-    const tufts = 3 + Math.floor(Math.random() * 5);
-    for (let t = 0; t < tufts; t++) {
-      scenery.push({
-        type: 'grass',
-        x: cx + (Math.random() - 0.5) * 60,
-        y: cy + (Math.random() - 0.5) * 60,
-        size: rnd(8, 18),
-        hue: 100 + Math.random() * 40
-      });
+      } catch (error) { /* Audio is optional. */ }
     }
-  }
 
-  // Clouds - soft ellipses
-  const cloudCount = 4 + Math.floor(Math.random() * 4);
-  for (let i = 0; i < cloudCount; i++) {
-    scenery.push({
-      type: 'cloud',
-      x: rnd(0.1, 0.9) * canvasWidth,
-      y: rnd(0.05, 0.4) * canvasHeight,
-      w: rnd(40, 80),
-      h: rnd(20, 40),
-      opacity: rnd(0.15, 0.35)
-    });
-  }
+    function updateHome() {
+      const completed = Object.keys(state.save.completed).filter(key => state.save.completed[key]).length;
+      const current = state.save.current;
+      byId('continueButton').textContent = current ? 'Continue current trail' : completed ? 'Continue adventure' : 'Begin adventure';
+      byId('collectionSummary').textContent = `${state.save.discovered.length} of ${Object.keys(ANIMALS).length} animals found`;
+      byId('saveNote').textContent = state.storageAvailable ? 'Progress is saved on this device.' : 'Progress will last for this visit.';
+      const today = new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      byId('dailyLabel').textContent = state.save.daily[today] ? `Completed ${today} · replay anytime` : `${today} · one shared daily seed`;
+    }
+    function goHome() { abandonRuntime(); updateHome(); showScreen('home'); }
 
-  // Rocks - grey rounded shapes
-  const rockClusters = 5 + Math.floor(Math.random() * 4);
-  for (let c = 0; c < rockClusters; c++) {
-    const cx = rnd(0.1, 0.9) * canvasWidth;
-    const cy = rnd(0.2, 0.9) * canvasHeight;
-    const rocks = 2 + Math.floor(Math.random() * 3);
-    for (let r = 0; r < rocks; r++) {
-      scenery.push({
-        type: 'rock',
-        x: cx + (Math.random() - 0.5) * 50,
-        y: cy + (Math.random() - 0.5) * 50,
-        w: rnd(15, 35),
-        h: rnd(10, 25),
-        grey: 140 + Math.random() * 40
+    function renderMap() {
+      const map = byId('habitatMap'); map.textContent = '';
+      const total = Object.keys(state.save.completed).filter(key => state.save.completed[key]).length;
+      byId('mapProgress').textContent = `${total} of ${HABITATS.length * ROUNDS_PER_HABITAT} trails complete`;
+      HABITATS.forEach((habitat, index) => {
+        const count = completedCount(state.save, habitat.id); const unlocked = habitatUnlocked(state.save, index);
+        const button = doc.createElement('button'); button.type = 'button'; button.className = 'habitat-card'; button.disabled = !unlocked; button.style.background = habitat.color;
+        button.innerHTML = `<span class="card-progress">${count} / 8</span><span class="map-icon" aria-hidden="true">${habitat.icon}</span><h2>${habitat.name}</h2><p>${habitat.description}</p>${unlocked ? '' : `<span class="lock"><span>🔒</span>Complete 6 trails in<br>${HABITATS[index - 1].name}</span>`}`;
+        button.addEventListener('click', () => openHabitat(index)); map.appendChild(button);
       });
+      showScreen('map');
     }
-  }
-}
 
-/**
- * Play a short "boop" sound for wrong clicks (synthesized, no external files).
- */
-function playBoop() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  const osc = audioCtx.createOscillator();
-  const gain = audioCtx.createGain();
-  osc.connect(gain);
-  gain.connect(audioCtx.destination);
-  osc.frequency.setValueAtTime(200, audioCtx.currentTime);
-  osc.frequency.exponentialRampToValueAtTime(150, audioCtx.currentTime + 0.05);
-  osc.type = 'sine';
-  gain.gain.setValueAtTime(0.15, audioCtx.currentTime);
-  gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
-  osc.start(audioCtx.currentTime);
-  osc.stop(audioCtx.currentTime + 0.15);
-}
-
-/**
- * Play animal-specific sound from ./assets/sounds/{animal}.mp3 if available.
- * Add CC0 sounds (e.g. from Pixabay, freesound.org) to enable. Falls back to boop.
- */
-function playAnimalSound(animal) {
-  const audio = new Audio(`./assets/sounds/${animal}.mp3`);
-  audio.volume = 0.5;
-  audio.onerror = () => playBoop();
-  audio.play().catch(() => playBoop());
-}
-
-/* ===== CANVAS SETUP & RESPONSIVENESS ===== */
-function initCanvas() {
-  canvas = document.getElementById('gameCanvas');
-  ctx = canvas.getContext('2d');
-  const container = document.querySelector('.game-container');
-
-  function resizeCanvas() {
-    const rect = container.getBoundingClientRect();
-    canvasWidth = rect.width;
-    canvasHeight = rect.height;
-    canvas.width = canvasWidth;
-    canvas.height = canvasHeight;
-    if (placedAnimals.length > 0) {
-      generateLevel(); // Regenerate to fit new size
+    function openHabitat(index) {
+      state.selectedHabitat = index; const habitat = HABITATS[index]; const count = completedCount(state.save, habitat.id);
+      byId('roundsEyebrow').textContent = `Habitat ${index + 1} of ${HABITATS.length}`; byId('roundsTitle').textContent = habitat.name; byId('roundsProgress').textContent = `${count} of 8 complete`;
+      byId('habitatIntro').style.background = `linear-gradient(115deg, ${habitat.color}, #fffdf5)`;
+      byId('habitatIntro').innerHTML = `<span class="intro-icon" aria-hidden="true">${habitat.icon}</span><div><h2>${count >= 6 ? 'Habitat path unlocked!' : `${UNLOCK_AFTER - Math.min(count, UNLOCK_AFTER)} trail${UNLOCK_AFTER - Math.min(count, UNLOCK_AFTER) === 1 ? '' : 's'} until the next habitat`}</h2><p>${habitat.description} Find its animals to fill your journal.</p></div>`;
+      const grid = byId('roundGrid'); grid.textContent = '';
+      ROUND_RECIPES.forEach((recipe, roundIndex) => {
+        const key = `${habitat.id}:${roundIndex}`; const complete = !!state.save.completed[key]; const unlocked = roundUnlocked(state.save, habitat, roundIndex);
+        const button = doc.createElement('button'); button.type = 'button'; button.disabled = !unlocked; button.className = `round-card${complete ? ' complete' : ''}`;
+        const badge = state.save.badges[key] || {};
+        button.innerHTML = `<span class="round-number">${complete ? '✓' : roundIndex + 1}</span><span class="stars">${badge.unassisted ? '★' : ''}${badge.careful ? '★' : ''}</span><h3>${recipe.title}</h3><p>${unlocked ? recipe.description : 'Complete the previous trail'}</p>`;
+        button.addEventListener('click', () => startAdventure(index, roundIndex)); grid.appendChild(button);
+      });
+      showScreen('rounds');
     }
-  }
 
-  resizeCanvas();
-  window.addEventListener('resize', resizeCanvas);
-}
+    function savedCurrentIsValid(current) {
+      if (!current || !['adventure','free','daily'].includes(current.mode)) return false;
+      if (!Number.isInteger(current.habitatIndex) || !HABITATS[current.habitatIndex]) return false;
+      if (!Number.isInteger(current.roundIndex) || current.roundIndex < 0 || current.roundIndex >= ROUND_RECIPES.length) return false;
+      if (current.mode === 'free' && (!current.recipe || !Number.isInteger(current.recipe.count) || !Number.isInteger(current.recipe.targets) || !['species','exact','checklist'].includes(current.recipe.rule))) return false;
+      return true;
+    }
+    function startAdventure(habitatIndex, roundIndex, restore) {
+      const habitat = HABITATS[habitatIndex]; const seed = `wild-trails:${habitat.id}:${roundIndex}:v2`;
+      startRound({ mode: 'adventure', habitatIndex, roundIndex, seed, restore });
+    }
+    function continueAdventure() {
+      if (savedCurrentIsValid(state.save.current)) { const current = state.save.current; startRound(Object.assign({}, current, { restore: current })); return; }
+      for (let h = 0; h < HABITATS.length; h += 1) {
+        if (!habitatUnlocked(state.save, h)) break;
+        for (let r = 0; r < ROUNDS_PER_HABITAT; r += 1) if (roundUnlocked(state.save, HABITATS[h], r) && !state.save.completed[`${HABITATS[h].id}:${r}`]) { startAdventure(h, r); return; }
+      }
+      startAdventure(0, 0);
+    }
 
-/**
- * Compute AABB (Axis-Aligned Bounding Box) for a rotated, scaled rectangle.
- * @param {number} cx - Center x
- * @param {number} cy - Center y
- * @param {number} w - Image width
- * @param {number} h - Image height
- * @param {number} scale - Scale factor
- * @param {number} rotationDeg - Rotation in degrees
- * @returns {{ minX, minY, maxX, maxY }}
- */
-function computeAABB(cx, cy, w, h, scale, rotationDeg) {
-  const rad = (rotationDeg * Math.PI) / 180;
-  const cos = Math.cos(rad);
-  const sin = Math.sin(rad);
-  const hw = (w * scale) / 2;
-  const hh = (h * scale) / 2;
-  const corners = [
-    { x: -hw * cos + hh * sin, y: -hw * sin - hh * cos },
-    { x:  hw * cos + hh * sin, y:  hw * sin - hh * cos },
-    { x:  hw * cos - hh * sin, y:  hw * sin + hh * cos },
-    { x: -hw * cos - hh * sin, y: -hw * sin + hh * cos }
-  ];
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  corners.forEach(c => {
-    const x = cx + c.x, y = cy + c.y;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  });
-  return { minX, minY, maxX, maxY };
-}
+    function startRound(options) {
+      abandonRuntime();
+      const habitat = HABITATS[options.habitatIndex];
+      const customRecipe = options.recipe || null;
+      const generated = generateRound({ habitat, roundIndex: options.roundIndex, seed: options.seed, recipe: customRecipe });
+      const restoredFound = options.restore && Array.isArray(options.restore.foundTargetIds) ? options.restore.foundTargetIds.filter(id => generated.targetIds.includes(id)) : [];
+      state.round = Object.assign(generated, { mode: options.mode, habitatIndex: options.habitatIndex, roundIndex: options.roundIndex, foundTargetIds: restoredFound, foundSpecies: restoredFound.map(id => generated.instances.find(item => item.id === id).animal), challenge: !!options.challenge, completed: false, token: Date.now() + Math.random() });
+      state.mistakes = options.restore ? Number(options.restore.mistakes || 0) : 0; state.hints = options.restore ? Number(options.restore.hints || 0) : 0; state.hintStage = 0; state.paused = false; state.pausedDuration = 0; state.startedAt = Date.now();
+      showScreen('play'); renderRound(); updateTarget(); saveCurrent(); startClock(); scheduleAutoHint();
+    }
 
-/**
- * Check if an AABB is at least minFraction visible within the canvas.
- * Used for target placement so kids can always see most of the animal.
- */
-function isMostlyVisible(aabb, minFraction = 0.8) {
-  const w = aabb.maxX - aabb.minX;
-  const h = aabb.maxY - aabb.minY;
-  if (w <= 0 || h <= 0) return true;
-  const visibleW = Math.min(aabb.maxX, canvasWidth) - Math.max(aabb.minX, 0);
-  const visibleH = Math.min(aabb.maxY, canvasHeight) - Math.max(aabb.minY, 0);
-  return (visibleW / w >= minFraction) && (visibleH / h >= minFraction);
-}
+    function saveCurrent() {
+      if (!state.round || state.round.completed) return;
+      state.save.current = { mode: state.round.mode, habitatIndex: state.round.habitatIndex, roundIndex: state.round.roundIndex, seed: state.round.seed, recipe: state.round.mode === 'free' ? state.round.recipe : undefined, challenge: state.round.challenge, foundTargetIds: state.round.foundTargetIds.slice(), mistakes: state.mistakes, hints: state.hints };
+      persist();
+    }
+    function abandonRuntime() { clearInterval(state.timerId); clearTimeout(state.autoHintId); clearTimeout(state.messageTimer); state.timerId = null; state.autoHintId = null; state.round = null; state.paused = false; closeDialog(byId('pauseDialog')); }
 
-/**
- * Check if placing a new animal would cause it to fully cover another, or vice versa.
- * "Fully cover" = one animal's center falls inside the other's bounding box.
- */
-function wouldFullyOverlap(newAabb, newX, newY, existing) {
-  const existingCenterInNew = existing.x >= newAabb.minX && existing.x <= newAabb.maxX && existing.y >= newAabb.minY && existing.y <= newAabb.maxY;
-  const newCenterInExisting = newX >= existing.aabb.minX && newX <= existing.aabb.maxX && newY >= existing.aabb.minY && newY <= existing.aabb.maxY;
-  return existingCenterInNew || newCenterInExisting;
-}
-
-/**
- * Screen-aware grid: portrait phones get smaller cells (65px), landscape gets 80px.
- * Fixes aspect ratio mismatch (6×5 vs 9×16) and fat-finger problem.
- */
-function getResponsiveGridSize() {
-  const isPortrait = canvasHeight > canvasWidth;
-  const targetCellSize = isPortrait ? 65 : 80;
-
-  const gridCols = Math.floor(canvasWidth / targetCellSize);
-  const gridRows = Math.floor(canvasHeight / targetCellSize);
-
-  return {
-    gridCols: Math.max(3, gridCols),
-    gridRows: Math.max(3, gridRows)
-  };
-}
-
-/**
- * generateLevel() - Grid-like placement with level-based difficulty.
- * Quantity, scale, and camouflage all scale with level.
- */
-function generateLevel() {
-  placedAnimals = [];
-  burstParticles = [];
-  poofParticles = [];
-  gameWon = false;
-  if (hintTimeoutId) clearTimeout(hintTimeoutId);
-  if (hintIntervalId) clearInterval(hintIntervalId);
-  hintTimeoutId = hintIntervalId = null;
-
-  // Responsive grid: adapts to screen size, never overcrowds
-  const { gridCols, gridRows } = getResponsiveGridSize();
-  const maxCells = gridCols * gridRows - 1;
-  const rawDecoys = DECOY_BASE + (level - 1) * DECOY_PER_LEVEL + Math.floor(Math.random() * 4);
-  const decoyCap = Math.max(8, Math.floor(maxCells * 0.65));
-  const decoyCount = Math.min(rawDecoys, maxCells, decoyCap);
-  const useCamouflage = level >= CAMOUFLAGE_LEVEL;
-
-  // Scale animals to cell size - never larger than cell, prevents clumping
-  const cellW = canvasWidth / gridCols;
-  const cellH = canvasHeight / gridRows;
-  const maxCellDimension = Math.min(cellW, cellH);
-
-  // 1. Pick target
-  const targetAnimalName = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
-  const targetStyle = STYLES[Math.floor(Math.random() * STYLES.length)];
-  const styleLabel = targetStyle.charAt(0).toUpperCase() + targetStyle.slice(1);
-  targetInfo = {
-    style: targetStyle,
-    animal: targetAnimalName,
-    displayName: `${styleLabel} ${targetAnimalName.charAt(0).toUpperCase() + targetAnimalName.slice(1)}`
-  };
-
-  document.getElementById('levelBadge').textContent = `Level ${level}`;
-  document.getElementById('targetText').textContent = `Find the ${targetInfo.displayName}!`;
-
-  // Thematic level backgrounds: Meadow (1) -> Ocean (2) -> Desert (3) -> cycle
-  const themes = [
-    'linear-gradient(135deg, #c8e6c9 0%, #a5d6a7 50%, #81c784 100%)',  // Meadow
-    'linear-gradient(135deg, #bbdefb 0%, #90caf9 50%, #64b5f6 100%)',  // Ocean
-    'linear-gradient(135deg, #ffe0b2 0%, #ffcc80 50%, #ffb74d 100%)'   // Desert/Sunset
-  ];
-  document.body.style.background = themes[(level - 1) % themes.length];
-  const previewImg = ImageBank.get(targetStyle, targetAnimalName);
-  const previewEl = document.getElementById('targetPreview');
-  if (previewImg) previewEl.src = previewImg.src;
-  previewEl.style.display = previewImg ? 'block' : 'none';
-
-  const sameColorDecoys = getSameColorAnimals(targetAnimalName);
-
-  // 2. Build grid with row/col for "near target" detection
-  const allCells = [];
-  for (let row = 0; row < gridRows; row++) {
-    for (let col = 0; col < gridCols; col++) {
-      allCells.push({
-        cx: (col + 0.5) * cellW,
-        cy: (row + 0.5) * cellH,
-        row,
-        col
+    function landmarksFor(habitatId) {
+      const common = '<span class="landmark tree one"></span><span class="landmark tree two"></span>';
+      if (habitatId === 'farm') return `${common}<span class="landmark barn"></span><span class="landmark pond"></span>`;
+      if (habitatId === 'woodland') return `${common}<span class="landmark mountain"></span><span class="landmark reeds"></span>`;
+      if (habitatId === 'savanna') return '<span class="landmark tree two"></span><span class="landmark pond"></span>';
+      if (habitatId === 'rainforest') return `${common}<span class="landmark reeds"></span>`;
+      if (habitatId === 'bamboo') return '<span class="landmark bamboo-stalk one"></span><span class="landmark bamboo-stalk two"></span><span class="landmark pond"></span>';
+      return '<span class="landmark ice"></span><span class="landmark reeds"></span>';
+    }
+    function renderRound() {
+      const round = state.round; const habitat = HABITATS[round.habitatIndex];
+      byId('playHabitatIcon').textContent = habitat.icon; byId('playHabitat').textContent = habitat.name;
+      byId('playRound').textContent = round.mode === 'adventure' ? `Trail ${round.roundIndex + 1} of 8` : round.mode === 'daily' ? 'Today’s daily trail' : `${titleCase(round.recipe.title)} free play`;
+      byId('timer').classList.toggle('hidden', !round.challenge); byId('scene').className = `scene ${habitat.id}`; byId('sceneBackdrop').innerHTML = landmarksFor(habitat.id);
+      const layer = byId('animalLayer'); layer.textContent = ''; const size = round.instances.length >= 18 ? 10 : round.instances.length >= 13 ? 11.5 : 13;
+      round.instances.forEach(instance => {
+        const button = doc.createElement('button'); button.type = 'button'; button.className = `animal-button${round.foundTargetIds.includes(instance.id) ? ' found' : ''}`; button.dataset.id = instance.id;
+        button.style.setProperty('--x', `${instance.x}%`); button.style.setProperty('--y', `${instance.y}%`); button.style.setProperty('--rotation', `${instance.rotation}deg`); button.style.setProperty('--animal-size', `${size}cqw`);
+        button.setAttribute('aria-label', `${titleCase(instance.animal)}${instance.style === 'square' ? ', square portrait' : ', round portrait'}${round.foundTargetIds.includes(instance.id) ? ', found' : ''}`);
+        button.innerHTML = `<img src="${imagePath(instance.animal, instance.style)}" alt="" draggable="false">`;
+        button.addEventListener('click', () => chooseAnimal(instance, button)); layer.appendChild(button);
       });
     }
-  }
 
-  // 3. Place TARGET first (so we know where "near" is for camouflage)
-  // Target must be at least 80% visible so kids can find it (never clipped at edge)
-  const targetImg = ImageBank.get(targetStyle, targetAnimalName);
-  const shuffledCells = [...allCells].sort(() => Math.random() - 0.5);
-  let targetCell = null;
-  let decoyCells = allCells;
+    function remainingTargets() { return state.round.targetIds.filter(id => !state.round.foundTargetIds.includes(id)); }
+    function currentTarget() {
+      const remaining = remainingTargets(); if (!remaining.length) return null;
+      const id = remaining[0]; return state.round.instances.find(item => item.id === id);
+    }
+    function updateTarget() {
+      const round = state.round; if (!round) return; const remaining = remainingTargets(); const target = currentTarget();
+      byId('findProgress').textContent = `${round.foundTargetIds.length} / ${round.targetIds.length} found`;
+      const tray = byId('targetTray'); tray.textContent = '';
+      round.targetIds.forEach(id => { const item = round.instances.find(instance => instance.id === id); const found = round.foundTargetIds.includes(id); const span = doc.createElement('span'); span.className = `tray-animal${found ? ' found' : ''}`; span.title = `${titleCase(item.animal)}${found ? ' found' : ''}`; span.innerHTML = `<img src="${imagePath(item.animal, item.style)}" alt="">`; tray.appendChild(span); });
+      if (!target) return;
+      const checklist = round.recipe.rule === 'checklist'; const label = checklist ? 'Choose any remaining animal' : round.recipe.rule === 'exact' ? `Find the ${target.style} ${target.animal}` : `Find the ${target.animal}`;
+      byId('targetEyebrow').textContent = checklist ? `${remaining.length} left on the ranger’s list` : 'Your next find'; byId('targetText').textContent = label; byId('targetClue').textContent = checklist ? `You can find ${remaining.map(id => titleCase(round.instances.find(item => item.id === id).animal)).join(', ')} in any order.` : ANIMALS[target.animal].clue;
+      byId('targetPreview').src = imagePath(target.animal, target.style); byId('targetPreview').alt = `${titleCase(target.animal)} target portrait`;
+      byId('ruleLabel').textContent = round.recipe.rule === 'exact' ? 'Match both the animal and portrait shape' : checklist ? 'Find the remaining animals in any order' : 'Match the animal in the picture';
+      clearHintVisuals();
+    }
 
-  if (targetImg) {
-    const scaleToFit = (maxCellDimension * CELL_BREATHING) / Math.max(targetImg.width, targetImg.height);
-    const scale = scaleToFit * (0.92 + Math.random() * 0.08);
-    const rotation = (Math.random() * 2 - 1) * ROTATION_RANGE;
-    let placed = false;
-    for (const cell of shuffledCells) {
-      if (placed) break;
-      for (let attempt = 0; attempt < 12 && !placed; attempt++) {
-        const jitterX = (Math.random() * 2 - 1) * cellW * JITTER;
-        const jitterY = (Math.random() * 2 - 1) * cellH * JITTER;
-        const x = cell.cx + jitterX;
-        const y = cell.cy + jitterY;
-        const aabb = computeAABB(x, y, targetImg.width, targetImg.height, scale, rotation);
-        const overlaps = placedAnimals.some(ex => wouldFullyOverlap(aabb, x, y, ex));
-        const mostlyVisible = isMostlyVisible(aabb, TARGET_MIN_VISIBLE);
-        if (!overlaps && mostlyVisible) {
-          targetCell = cell;
-          const targetObj = { img: targetImg, x, y, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true, wobbleStart: 0 };
-          placedAnimals.push(targetObj);
-          targetAnimal = targetObj;
-          placed = true;
-        }
+    function isCorrect(instance) {
+      const remaining = remainingTargets();
+      return state.round.recipe.rule === 'checklist' ? remaining.includes(instance.id) : instance.id === remaining[0];
+    }
+    function chooseAnimal(instance, button) {
+      if (!state.round || state.round.completed || state.paused || state.round.foundTargetIds.includes(instance.id)) return;
+      if (!isCorrect(instance)) {
+        state.mistakes += 1; sound('wrong'); button.classList.remove('wrong'); void button.offsetWidth; button.classList.add('wrong');
+        const target = currentTarget(); showSceneMessage(`That’s the ${titleCase(instance.animal)}. ${state.round.recipe.rule === 'checklist' ? 'Try another animal on the list.' : `Keep looking for the ${titleCase(target.animal)}.`}`); saveCurrent(); return;
       }
+      state.round.foundTargetIds.push(instance.id); state.round.foundSpecies.push(instance.animal); button.classList.add('found'); button.setAttribute('aria-label', `${titleCase(instance.animal)}, found`);
+      if (!state.save.discovered.includes(instance.animal)) { state.save.discovered.push(instance.animal); toast(`New journal page: ${titleCase(instance.animal)}!`); }
+      sound('found'); sparkleAt(instance.x, instance.y); state.hintStage = 0; clearTimeout(state.autoHintId); saveCurrent();
+      if (remainingTargets().length === 0) { setTimeout(() => completeRound(), state.save.settings.motion ? 450 : 20); }
+      else { updateTarget(); showSceneMessage(`You found the ${titleCase(instance.animal)}!`); scheduleAutoHint(); }
     }
-    if (!placed) {
-      // Fallback: use first cell where center placement is at least 80% visible
-      for (const cell of shuffledCells) {
-        const aabb = computeAABB(cell.cx, cell.cy, targetImg.width, targetImg.height, scale, rotation);
-        if (isMostlyVisible(aabb, TARGET_MIN_VISIBLE)) {
-          targetCell = cell;
-          const targetObj = { img: targetImg, x: cell.cx, y: cell.cy, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true, wobbleStart: 0 };
-          placedAnimals.push(targetObj);
-          targetAnimal = targetObj;
-          placed = true;
-          break;
-        }
+
+    function showSceneMessage(message) { const element = byId('sceneMessage'); clearTimeout(state.messageTimer); element.textContent = message; element.classList.remove('visible'); void element.offsetWidth; element.classList.add('visible'); state.messageTimer = setTimeout(() => element.classList.remove('visible'), 2300); }
+    function sparkleAt(x, y) {
+      if (!state.save.settings.motion) return; const holder = byId('sceneSparkles'); holder.style.left = `${x}%`; holder.style.top = `${y}%`; holder.textContent = '';
+      const colors = ['#ffe36f','#ffffff','#ef765e','#87d9bd'];
+      for (let i = 0; i < 12; i += 1) { const spark = doc.createElement('i'); const angle = i / 12 * Math.PI * 2; spark.className = 'spark'; spark.style.setProperty('--dx', `${Math.cos(angle) * (35 + i * 2)}px`); spark.style.setProperty('--dy', `${Math.sin(angle) * (35 + i * 2)}px`); spark.style.setProperty('--spark', colors[i % colors.length]); holder.appendChild(spark); }
+      setTimeout(() => { holder.textContent = ''; }, 850);
+    }
+
+    function clearHintVisuals() { state.hintStage = 0; byId('hintRegion').classList.remove('visible'); byId('scene').classList.remove('hint-dim'); doc.querySelectorAll('.animal-button.target-hint').forEach(button => button.classList.remove('target-hint')); byId('hintButton').innerHTML = '<span aria-hidden="true">💡</span> Give me a hint'; }
+    function useHint() {
+      if (!state.round || state.round.completed) return; const target = currentTarget(); if (!target) return; state.hints += 1; state.hintStage = Math.min(3, state.hintStage + 1);
+      const button = byId('animalLayer').querySelector(`[data-id="${target.id}"]`); const region = byId('hintRegion');
+      if (state.hintStage === 1) { region.style.setProperty('--hint-x', `${target.x}%`); region.style.setProperty('--hint-y', `${target.y}%`); region.classList.add('visible'); showSceneMessage('The animal is somewhere inside the glowing region.'); byId('hintButton').textContent = 'Make the clue stronger'; }
+      if (state.hintStage === 2) { byId('scene').classList.add('hint-dim'); button.classList.add('target-hint'); region.classList.remove('visible'); showSceneMessage('Look for the animal that is glowing.'); byId('hintButton').textContent = 'Show me again'; }
+      if (state.hintStage === 3) { button.classList.add('target-hint'); button.focus({ preventScroll: true }); showSceneMessage(`Here is the ${titleCase(target.animal)}.`); }
+      saveCurrent(); sound('found');
+    }
+    function scheduleAutoHint() { clearTimeout(state.autoHintId); if (!state.save.settings.autoHint) return; state.autoHintId = setTimeout(() => { if (state.round && !state.round.completed && !state.paused) toast('Need a clue? The hint button is ready when you are.'); }, 18000); }
+
+    function elapsedSeconds() { return Math.max(0, Math.floor((Date.now() - state.startedAt - state.pausedDuration) / 1000)); }
+    function formatTime(seconds) { return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`; }
+    function startClock() { clearInterval(state.timerId); if (!state.round || !state.round.challenge) return; byId('timer').textContent = formatTime(elapsedSeconds()); state.timerId = setInterval(() => { if (!state.paused) byId('timer').textContent = formatTime(elapsedSeconds()); }, 1000); }
+    function stopClock() { clearInterval(state.timerId); state.timerId = null; }
+    function pauseRound() { if (!state.round || state.round.completed) return; state.paused = true; state.pausedAt = Date.now(); clearTimeout(state.autoHintId); byId('pauseDialog').showModal(); }
+    function resumeRound() { if (!state.paused) return; state.pausedDuration += Date.now() - state.pausedAt; state.paused = false; closeDialog(byId('pauseDialog')); scheduleAutoHint(); }
+
+    function completeRound() {
+      const round = state.round; if (!round || round.completed) return; round.completed = true; stopClock(); clearTimeout(state.autoHintId); state.save.current = null;
+      if (round.mode === 'adventure') {
+        const key = `${round.habitatId}:${round.roundIndex}`; state.save.completed[key] = true; const prior = state.save.badges[key] || {};
+        state.save.badges[key] = { unassisted: prior.unassisted || state.hints === 0, careful: prior.careful || state.mistakes <= 2, bestTime: round.challenge ? Math.min(prior.bestTime || Infinity, elapsedSeconds()) : prior.bestTime };
       }
-    }
-    if (!placed) {
-      targetCell = shuffledCells[0];
-      const aabb = computeAABB(targetCell.cx, targetCell.cy, targetImg.width, targetImg.height, scale, rotation);
-      const targetObj = { img: targetImg, x: targetCell.cx, y: targetCell.cy, scale, rotation, style: targetStyle, animal: targetAnimalName, aabb, isTarget: true, wobbleStart: 0 };
-      placedAnimals.push(targetObj);
-      targetAnimal = targetObj;
-    }
-    decoyCells = allCells.filter(c => c !== targetCell);
-  }
-
-  // 4. Shuffle decoy cells and place decoys (with camouflage near target at higher levels)
-  for (let i = decoyCells.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [decoyCells[i], decoyCells[j]] = [decoyCells[j], decoyCells[i]];
-  }
-
-  for (let i = 0; i < decoyCount; i++) {
-    const cell = decoyCells[i];
-    const isNearTarget = useCamouflage && targetCell &&
-      Math.abs(cell.row - targetCell.row) <= 1 &&
-      Math.abs(cell.col - targetCell.col) <= 1;
-
-    let style, animal;
-    if (isNearTarget && sameColorDecoys.length > 0 && Math.random() < CAMOUFLAGE_BIAS) {
-      animal = sameColorDecoys[Math.floor(Math.random() * sameColorDecoys.length)];
-      style = STYLES[Math.floor(Math.random() * STYLES.length)];
-    } else {
-      do {
-        style = STYLES[Math.floor(Math.random() * STYLES.length)];
-        animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)];
-      } while (style === targetStyle && animal === targetAnimalName);
+      if (round.mode === 'daily') state.save.daily[new Date().toLocaleDateString(undefined, { month: 'short', day: 'numeric' })] = true;
+      persist(); sound('complete');
+      const newFinds = [...new Set(round.foundSpecies)]; byId('resultAnimals').innerHTML = newFinds.map(animal => `<img src="${imagePath(animal)}" alt="${titleCase(animal)}">`).join('');
+      byId('resultEyebrow').textContent = round.mode === 'daily' ? 'Daily trail complete' : round.mode === 'free' ? 'Free trail complete' : 'Trail complete';
+      byId('resultTitle').textContent = state.hints === 0 ? 'Sharp eyes, ranger!' : 'Every pawprint found!';
+      byId('resultMessage').textContent = `You found ${round.targetIds.length} animal${round.targetIds.length === 1 ? '' : 's'} in ${formatTime(elapsedSeconds())}${state.mistakes ? ` with ${state.mistakes} careful correction${state.mistakes === 1 ? '' : 's'}` : ''}.`;
+      const badges = []; if (state.hints === 0) badges.push('★ Eagle Eyes'); if (state.mistakes <= 2) badges.push('★ Gentle Tracker'); if (round.challenge) badges.push(`⏱ ${formatTime(elapsedSeconds())}`); byId('resultBadges').innerHTML = badges.map(item => `<span>${item}</span>`).join('');
+      byId('nextRoundButton').textContent = round.mode === 'adventure' && round.roundIndex < 7 ? 'Next trail' : 'Play another'; byId('resultDialog').showModal();
     }
 
-    const img = ImageBank.get(style, animal);
-    if (!img) continue;
+    function leaveRound() { state.save.current = state.round && !state.round.completed ? state.save.current : null; persist(); const mode = state.round ? state.round.mode : 'adventure'; const habitat = state.round ? state.round.habitatIndex : state.selectedHabitat; abandonRuntime(); if (mode === 'adventure') openHabitat(habitat); else goHome(); }
+    function restartRound() { const round = state.round; if (!round) return; const options = { mode: round.mode, habitatIndex: round.habitatIndex, roundIndex: round.roundIndex, seed: round.seed, recipe: round.mode === 'free' ? round.recipe : undefined, challenge: round.challenge }; closeDialog(byId('pauseDialog')); startRound(options); }
+    function resultMap() { closeDialog(byId('resultDialog')); const round = state.round; if (round && round.mode === 'adventure') { const index = round.habitatIndex; abandonRuntime(); openHabitat(index); } else goHome(); }
+    function nextRound() { closeDialog(byId('resultDialog')); const round = state.round; if (round && round.mode === 'adventure' && round.roundIndex < 7) startAdventure(round.habitatIndex, round.roundIndex + 1); else { abandonRuntime(); renderMap(); } }
 
-    const scaleToFit = (maxCellDimension * CELL_BREATHING) / Math.max(img.width, img.height);
-    const scale = scaleToFit * (0.92 + Math.random() * 0.08);
-    const rotation = (Math.random() * 2 - 1) * ROTATION_RANGE;
-
-    let placed = false;
-    for (let attempt = 0; attempt < 8 && !placed; attempt++) {
-      const jitterX = (Math.random() * 2 - 1) * cellW * JITTER;
-      const jitterY = (Math.random() * 2 - 1) * cellH * JITTER;
-      const x = cell.cx + jitterX;
-      const y = cell.cy + jitterY;
-      const aabb = computeAABB(x, y, img.width, img.height, scale, rotation);
-      const overlaps = placedAnimals.some(ex => wouldFullyOverlap(aabb, x, y, ex));
-      if (!overlaps) {
-        placedAnimals.push({ img, x, y, scale, rotation, style, animal, aabb, wobbleStart: 0 });
-        placed = true;
-      }
-    }
-    if (!placed) {
-      const aabb = computeAABB(cell.cx, cell.cy, img.width, img.height, scale, rotation);
-      placedAnimals.push({ img, x: cell.cx, y: cell.cy, scale, rotation, style, animal, aabb, wobbleStart: 0 });
-    }
-  }
-
-  generateScenery();
-  levelStartTime = Date.now();
-
-  // "Getting Warmer" hint: after 15s, target pulsates every 5s
-  hintTimeoutId = setTimeout(() => {
-    if (gameWon || !targetAnimal) return;
-    targetAnimal.hintPulseStart = Date.now();
-    render();
-    hintIntervalId = setInterval(() => {
-      if (gameWon || !targetAnimal) {
-        if (hintIntervalId) clearInterval(hintIntervalId);
-        return;
-      }
-      targetAnimal.hintPulseStart = Date.now();
-    }, HINT_INTERVAL_MS);
-  }, HINT_DELAY_MS);
-
-  render();
-}
-
-/**
- * Draw scenery layer (grass, clouds, rocks) - "busy world" visual noise.
- */
-function drawScenery() {
-  const now = Date.now() * 0.001;
-  scenery.forEach(s => {
-    ctx.save();
-    if (s.type === 'grass') {
-      ctx.fillStyle = `hsla(${s.hue}, 55%, 40%, 0.65)`;
-      for (let blade = 0; blade < 4; blade++) {
-        const angle = (blade / 4) * Math.PI * 0.8 + now * 0.2;
-        ctx.beginPath();
-        ctx.moveTo(s.x, s.y);
-        ctx.quadraticCurveTo(
-          s.x + Math.cos(angle) * s.size, s.y + Math.sin(angle) * s.size - s.size * 0.5,
-          s.x + Math.cos(angle) * s.size * 1.2, s.y + Math.sin(angle) * s.size * 1.2 - s.size
-        );
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = ctx.fillStyle;
-        ctx.stroke();
-      }
-    } else if (s.type === 'cloud') {
-      ctx.fillStyle = `rgba(255, 255, 255, ${s.opacity})`;
-      ctx.beginPath();
-      ctx.ellipse(s.x, s.y, s.w, s.h, 0, 0, Math.PI * 2);
-      ctx.ellipse(s.x + s.w * 0.5, s.y - s.h * 0.3, s.w * 0.6, s.h * 0.8, 0, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (s.type === 'rock') {
-      ctx.fillStyle = `rgba(${s.grey}, ${s.grey - 10}, ${s.grey + 10}, 0.7)`;
-      ctx.beginPath();
-      const r = 4;
-      ctx.moveTo(s.x + r, s.y);
-      ctx.lineTo(s.x + s.w - r, s.y);
-      ctx.quadraticCurveTo(s.x + s.w, s.y, s.x + s.w, s.y + r);
-      ctx.lineTo(s.x + s.w, s.y + s.h - r);
-      ctx.quadraticCurveTo(s.x + s.w, s.y + s.h, s.x + s.w - r, s.y + s.h);
-      ctx.lineTo(s.x + r, s.y + s.h);
-      ctx.quadraticCurveTo(s.x, s.y + s.h, s.x, s.y + s.h - r);
-      ctx.lineTo(s.x, s.y + r);
-      ctx.quadraticCurveTo(s.x, s.y, s.x + r, s.y);
-      ctx.fill();
-    }
-    ctx.restore();
-  });
-}
-
-/**
- * Render the scene: scenery, animals (with wobble), atmospheric overlay.
- */
-function render() {
-  if (!ctx || !canvasWidth || !canvasHeight) return;
-
-  ctx.clearRect(0, 0, canvasWidth, canvasHeight);
-
-  // 1. Scenery layer (grass, clouds, rocks)
-  drawScenery();
-
-  // 2. Animals with sticker effect, wobble, hint pulse, and happy jump
-  let needsWobbleFrame = false;
-  placedAnimals.forEach(entry => {
-    const { img, x, y, scale, rotation, wobbleStart = 0, hintPulseStart = 0, happyJumpStart = 0 } = entry;
-    if (!img) return;
-
-    const wobble = wobbleStart > 0 ? (Date.now() - wobbleStart) / WOBBLE_DURATION : 1;
-    if (wobble < 1) needsWobbleFrame = true;
-    const wobbleAmount = wobble < 1 ? Math.sin(wobble * Math.PI) * 8 : 0;
-    const wobbleRotate = wobble < 1 ? Math.sin(wobble * Math.PI * 4) * 0.15 : 0;
-
-    // "Getting Warmer" hint: target pulsates (scale 1 -> 1.12 -> 1) over ~400ms
-    let hintPulseMult = 1;
-    if (hintPulseStart > 0 && entry.isTarget) {
-      const elapsed = Date.now() - hintPulseStart;
-      if (elapsed < 450) {
-        hintPulseMult = 1 + 0.1 * Math.sin(elapsed * Math.PI / 450);
-        needsWobbleFrame = true;
-      }
+    function renderJournal(filter = state.journalFilter) {
+      state.journalFilter = filter; const filters = [{ id: 'all', label: 'All' }, ...HABITATS.map(item => ({ id: item.id, label: `${item.icon} ${item.name.split(' ')[0]}` }))];
+      byId('journalFilters').innerHTML = ''; filters.forEach(item => { const button = doc.createElement('button'); button.type = 'button'; button.className = `filter-pill${filter === item.id ? ' active' : ''}`; button.textContent = item.label; button.addEventListener('click', () => renderJournal(item.id)); byId('journalFilters').appendChild(button); });
+      const names = Object.keys(ANIMALS).filter(name => filter === 'all' || ANIMALS[name].homes.includes(filter)); byId('journalProgress').textContent = `${state.save.discovered.length} of ${Object.keys(ANIMALS).length} discovered`;
+      byId('journalGrid').innerHTML = names.map(name => { const found = state.save.discovered.includes(name); const home = HABITATS.find(item => ANIMALS[name].homes.includes(item.id)); return `<article class="journal-entry${found ? '' : ' unknown'}"><img src="${imagePath(name)}" alt="${found ? titleCase(name) : ''}"><strong>${found ? titleCase(name) : 'Undiscovered'}</strong><small>${found ? `${home.icon} ${home.name}` : 'Keep exploring'}</small></article>`; }).join('');
+      showScreen('journal');
     }
 
-    // Happy jump when target is found: bounces up and down with a little scale pop
-    let jumpY = 0;
-    let jumpScaleMult = 1;
-    if (happyJumpStart > 0 && entry.isTarget) {
-      const elapsed = Date.now() - happyJumpStart;
-      const t = Math.min(elapsed / HAPPY_JUMP_DURATION, 1);
-      if (t < 1) {
-        needsWobbleFrame = true;
-        jumpY = -HAPPY_JUMP_HEIGHT * Math.sin(t * Math.PI);
-        jumpScaleMult = 1 + 0.12 * Math.sin(t * Math.PI);
-      }
+    function openSettings() {
+      state.settingsPausedRound = !!(state.round && !state.round.completed && !state.paused);
+      if (state.settingsPausedRound) { state.paused = true; state.pausedAt = Date.now(); clearTimeout(state.autoHintId); }
+      byId('soundSetting').checked = state.save.settings.sound; byId('motionSetting').checked = state.save.settings.motion; byId('autoHintSetting').checked = state.save.settings.autoHint; byId('settingsDialog').showModal();
+    }
+    function closeSettings() {
+      syncSettings(); closeDialog(byId('settingsDialog'));
+      if (state.settingsPausedRound && state.round && !state.round.completed) { state.pausedDuration += Date.now() - state.pausedAt; state.paused = false; scheduleAutoHint(); }
+      state.settingsPausedRound = false;
+    }
+    function syncSettings() { state.save.settings.sound = byId('soundSetting').checked; state.save.settings.motion = byId('motionSetting').checked; state.save.settings.autoHint = byId('autoHintSetting').checked; doc.body.classList.toggle('reduce-motion', !state.save.settings.motion); updateSoundButton(); persist(); }
+    function updateSoundButton() { byId('soundButton').textContent = state.save.settings.sound ? '🔊' : '🔇'; byId('soundButton').setAttribute('aria-label', state.save.settings.sound ? 'Mute sound' : 'Turn on sound'); byId('soundButton').setAttribute('aria-pressed', String(!state.save.settings.sound)); }
+    function openFreePlay() {
+      byId('freeHabitatChoices').innerHTML = HABITATS.map((habitat, index) => `<label><input type="radio" name="freeHabitat" value="${index}"${index === 0 ? ' checked' : ''}><span>${habitat.icon} ${habitat.name.split(' ')[0]}</span></label>`).join(''); byId('freePlayDialog').showModal();
+    }
+    function startFreePlay() {
+      const habitatIndex = Number(doc.querySelector('input[name="freeHabitat"]:checked').value); const difficulty = doc.querySelector('input[name="difficulty"]:checked').value; const counts = { easy: 8, medium: 14, hard: 20 }; const targets = { easy: 2, medium: 3, hard: 4 }; const rule = difficulty === 'hard' ? 'checklist' : difficulty === 'medium' ? 'exact' : 'species'; const seed = `free:${Date.now()}`;
+      closeDialog(byId('freePlayDialog')); startRound({ mode: 'free', habitatIndex, roundIndex: difficulty === 'easy' ? 1 : difficulty === 'medium' ? 4 : 7, seed, challenge: byId('challengeSetting').checked, recipe: { title: difficulty, description: '', count: counts[difficulty], targets: targets[difficulty], rule } });
+    }
+    function startDaily() { const date = new Date(); const key = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`; const index = hashString(key) % HABITATS.length; startRound({ mode: 'daily', habitatIndex: index, roundIndex: 6, seed: `daily:${key}:v2`, challenge: true }); }
+    function speakClue() { if (!state.round || !('speechSynthesis' in window)) return; const voices = window.speechSynthesis.getVoices(); const voice = voices.find(item => item.localService && item.lang.startsWith('en')); if (!voice) { toast('No local reading voice is available in this browser.'); return; } const utterance = new SpeechSynthesisUtterance(`${byId('targetText').textContent}. ${byId('targetClue').textContent}`); utterance.voice = voice; window.speechSynthesis.cancel(); window.speechSynthesis.speak(utterance); }
+
+    function bind() {
+      byId('homeButton').addEventListener('click', goHome); byId('continueButton').addEventListener('click', continueAdventure); byId('mapButton').addEventListener('click', renderMap); byId('adventureCard').addEventListener('click', renderMap); byId('collectionButton').addEventListener('click', () => renderJournal()); byId('journalButton').addEventListener('click', () => renderJournal()); byId('freePlayButton').addEventListener('click', openFreePlay); byId('dailyButton').addEventListener('click', startDaily);
+      doc.querySelectorAll('[data-back]').forEach(button => button.addEventListener('click', () => button.dataset.back === 'home' ? goHome() : renderMap()));
+      byId('settingsButton').addEventListener('click', openSettings); byId('closeSettingsButton').addEventListener('click', closeSettings); ['soundSetting','motionSetting','autoHintSetting'].forEach(id => byId(id).addEventListener('change', syncSettings));
+      byId('soundButton').addEventListener('click', () => { state.save.settings.sound = !state.save.settings.sound; updateSoundButton(); persist(); if (state.save.settings.sound) sound('found'); });
+      byId('resetProgressButton').addEventListener('click', () => byId('confirmDialog').showModal()); byId('cancelResetButton').addEventListener('click', () => closeDialog(byId('confirmDialog'))); byId('confirmResetButton').addEventListener('click', () => { state.save = defaultSave(); persist(); closeDialog(byId('confirmDialog')); closeDialog(byId('settingsDialog')); updateSoundButton(); updateHome(); goHome(); toast('Adventure progress reset.'); });
+      byId('cancelFreePlayButton').addEventListener('click', () => closeDialog(byId('freePlayDialog'))); byId('startFreePlayButton').addEventListener('click', startFreePlay);
+      byId('leaveRoundButton').addEventListener('click', leaveRound); byId('pauseButton').addEventListener('click', pauseRound); byId('resumeButton').addEventListener('click', resumeRound); byId('restartButton').addEventListener('click', restartRound); byId('pauseLeaveButton').addEventListener('click', () => { closeDialog(byId('pauseDialog')); leaveRound(); });
+      byId('hintButton').addEventListener('click', useHint); byId('speakButton').addEventListener('click', speakClue); byId('resultMapButton').addEventListener('click', resultMap); byId('nextRoundButton').addEventListener('click', nextRound);
+      byId('pauseDialog').addEventListener('cancel', event => { event.preventDefault(); resumeRound(); });
+      byId('resultDialog').addEventListener('cancel', event => event.preventDefault());
+      byId('settingsDialog').addEventListener('cancel', event => { event.preventDefault(); closeSettings(); });
+      doc.addEventListener('visibilitychange', () => { if (!state.round || state.round.completed) return; if (doc.hidden && !state.paused) { state.paused = true; state.pausedAt = Date.now(); } else if (!doc.hidden && state.paused && !byId('pauseDialog').open) { state.pausedDuration += Date.now() - state.pausedAt; state.paused = false; scheduleAutoHint(); } });
     }
 
-    ctx.save();
-
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.25)';
-    ctx.shadowBlur = SHADOW_BLUR;
-    ctx.shadowOffsetX = SHADOW_OFFSET;
-    ctx.shadowOffsetY = SHADOW_OFFSET;
-
-    ctx.translate(x, y + jumpY);
-    ctx.rotate((rotation * Math.PI) / 180 + wobbleRotate);
-    ctx.translate(wobbleAmount * 0.5, -wobbleAmount);
-    ctx.scale(scale * hintPulseMult * jumpScaleMult, scale * hintPulseMult * jumpScaleMult);
-    ctx.drawImage(img, -img.width / 2, -img.height / 2, img.width, img.height);
-
-    ctx.restore();
-  });
-
-  // Atmospheric overlay
-  ctx.fillStyle = 'rgba(255, 250, 200, 0.12)';
-  ctx.fillRect(0, 0, canvasWidth, canvasHeight);
-
-  // 4. Poof particles (white smoke on decoy click)
-  poofParticles.forEach(p => {
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vy += 0.05;
-    p.life -= 0.04;
-    p.size *= 1.02;
-  });
-  poofParticles = poofParticles.filter(p => p.life > 0);
-  poofParticles.forEach(p => {
-    ctx.save();
-    ctx.globalAlpha = p.life;
-    ctx.fillStyle = `rgba(255, 255, 255, ${0.6 * p.life})`;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  });
-  if (poofParticles.length > 0) needsWobbleFrame = true;
-
-  // 5. Burst particles (from target on win)
-  burstParticles.forEach(p => {
-    ctx.save();
-    ctx.globalAlpha = p.life;
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
-  });
-
-  if (needsWobbleFrame || poofParticles.length > 0) requestAnimationFrame(render);
-}
-
-/**
- * Spawn particles bursting from the target's location on the canvas.
- */
-function launchBurstFromTarget(entry) {
-  const colors = ['#ff6b6b', '#4ecdc4', '#ffe66d', '#95e1d3', '#f38181', '#aa96da'];
-  burstParticles = [];
-  for (let i = 0; i < 50; i++) {
-    const angle = (i / 50) * Math.PI * 2 + Math.random() * 0.5;
-    const speed = 3 + Math.random() * 8;
-    burstParticles.push({
-      x: entry.x,
-      y: entry.y,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed - 2,
-      color: colors[Math.floor(Math.random() * colors.length)],
-      size: 3 + Math.random() * 5,
-      life: 1
-    });
-  }
-  animateBurst();
-}
-
-function animateBurst() {
-  if (!ctx || burstParticles.length === 0) return;
-  burstParticles.forEach(p => {
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vy += 0.2;
-    p.life -= 0.02;
-  });
-  burstParticles = burstParticles.filter(p => p.life > 0);
-  render();
-  if (burstParticles.length > 0) requestAnimationFrame(animateBurst);
-}
-
-/**
- * Spawn white "poof" smoke when clicking a decoy - tactile feedback for kids.
- */
-function spawnPoof(x, y) {
-  for (let i = 0; i < 12; i++) {
-    const angle = (i / 12) * Math.PI * 2 + Math.random() * 0.5;
-    const speed = 1 + Math.random() * 3;
-    poofParticles.push({
-      x, y,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed - 1,
-      size: 8 + Math.random() * 12,
-      life: 1
-    });
-  }
-}
-
-/**
- * checkClick(x, y) - Find topmost animal at position, handle target vs decoy.
- * Target: win + particle burst. Decoy: wobble + animal sound (or boop).
- */
-function checkClick(x, y) {
-  if (gameWon) return;
-
-  // Check in reverse order (last drawn = topmost)
-  for (let i = placedAnimals.length - 1; i >= 0; i--) {
-    const entry = placedAnimals[i];
-    const { aabb, isTarget, animal } = entry;
-    if (x >= aabb.minX && x <= aabb.maxX && y >= aabb.minY && y <= aabb.maxY) {
-      if (isTarget) {
-        gameWon = true;
-        entry.happyJumpStart = Date.now();
-        launchBurstFromTarget(entry);
-        setTimeout(showWinOverlay, 550);
-      } else {
-        entry.wobbleStart = Date.now();
-        spawnPoof(entry.x, entry.y);
-        playAnimalSound(animal);
-        render();
-      }
-      return;
-    }
-  }
-}
-
-/* Get canvas-relative coordinates from pointer/mouse/touch event.
- * Uses canvas internal dimensions vs display dimensions for correct scaling
- * (important when canvas is scaled on high-DPI or responsive layouts). */
-function getCanvasCoords(e) {
-  const rect = canvas.getBoundingClientRect();
-  const scaleX = canvas.width / rect.width;
-  const scaleY = canvas.height / rect.height;
-
-  let clientX, clientY;
-  if (e.touches && e.touches.length > 0) {
-    clientX = e.touches[0].clientX;
-    clientY = e.touches[0].clientY;
-  } else if (e.changedTouches && e.changedTouches.length > 0) {
-    clientX = e.changedTouches[0].clientX;
-    clientY = e.changedTouches[0].clientY;
-  } else {
-    clientX = e.clientX;
-    clientY = e.clientY;
+    function init() { loadSave(); bind(); updateSoundButton(); doc.body.classList.toggle('reduce-motion', !state.save.settings.motion); updateHome(); showScreen('home'); }
+    return { init, state, generateRound, normalizeSave };
   }
 
-  const x = (clientX - rect.left) * scaleX;
-  const y = (clientY - rect.top) * scaleY;
-  return { x, y };
-}
-
-function handlePointerDown(e) {
-  e.preventDefault();
-  e.stopPropagation();
-  const coords = getCanvasCoords(e);
-  checkClick(coords.x, coords.y);
-}
-
-/* ===== WIN OVERLAY & CONFETTI ===== */
-function showWinOverlay() {
-  const overlay = document.getElementById('winOverlay');
-  overlay.classList.add('visible');
-  launchConfetti();
-}
-
-function hideWinOverlay() {
-  document.getElementById('winOverlay').classList.remove('visible');
-}
-
-function launchConfetti() {
-  const confettiCanvas = document.getElementById('confettiCanvas');
-  confettiCanvas.width = window.innerWidth;
-  confettiCanvas.height = window.innerHeight;
-  confettiCtx = confettiCanvas.getContext('2d');
-
-  const colors = ['#ff6b6b', '#4ecdc4', '#ffe66d', '#95e1d3', '#f38181', '#aa96da'];
-  confettiParticles = [];
-  for (let i = 0; i < 80; i++) {
-    confettiParticles.push({
-      x: Math.random() * confettiCanvas.width,
-      y: Math.random() * confettiCanvas.height,
-      vx: (Math.random() - 0.5) * 8,
-      vy: (Math.random() - 0.5) * 8 - 2,
-      color: colors[Math.floor(Math.random() * colors.length)],
-      size: Math.random() * 6 + 3,
-      rotation: Math.random() * 360,
-      rotationSpeed: (Math.random() - 0.5) * 10
-    });
-  }
-  animateConfetti();
-}
-
-function animateConfetti() {
-  if (!confettiCtx) return;
-  confettiCtx.clearRect(0, 0, confettiCtx.canvas.width, confettiCtx.canvas.height);
-
-  let active = 0;
-  confettiParticles.forEach(p => {
-    p.x += p.vx;
-    p.y += p.vy;
-    p.vy += 0.15;
-    p.rotation += p.rotationSpeed;
-
-    confettiCtx.save();
-    confettiCtx.translate(p.x, p.y);
-    confettiCtx.rotate((p.rotation * Math.PI) / 180);
-    confettiCtx.fillStyle = p.color;
-    confettiCtx.fillRect(-p.size / 2, -p.size / 2, p.size, p.size);
-    confettiCtx.restore();
-
-    if (p.y < confettiCtx.canvas.height + 20) active++;
-  });
-
-  if (active > 0) {
-    requestAnimationFrame(animateConfetti);
-  }
-}
-
-/* ===== INIT: Preload images, then start game ===== */
-ImageBank.loadAll().then(() => {
-  initCanvas();
-  generateLevel();
-
-  // Use pointerdown only (works for mouse + touch) to avoid double-firing on mobile
-  const gameCanvas = document.getElementById('gameCanvas');
-  gameCanvas.addEventListener('pointerdown', handlePointerDown, { passive: false });
-});
-
-/* ===== PLAY AGAIN ===== */
-document.getElementById('playAgainBtn').addEventListener('click', () => {
-  hideWinOverlay();
-  level++;
-  generateLevel();
+  function init(doc) { return createApp(doc).init(); }
+  return { VERSION, ANIMALS, HABITATS, ROUND_RECIPES, hashString, makeRandom, shuffle, buildPositions, generateRound, defaultSave, normalizeSave, completedCount, habitatUnlocked, roundUnlocked, createApp, init };
 });
